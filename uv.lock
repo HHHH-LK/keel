@@ -286,6 +286,15 @@ wheels = [
 ]
 
 [[package]]
+name = "google-search-results"
+version = "2.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/77/30/b3a6f6a2e00f8153549c2fa345c58ae1ce8e5f3153c2fe0484d444c3abcb/google_search_results-2.4.2.tar.gz", hash = "sha256:603a30ecae2af8e600b22635757a6df275dad4b934f975e67878ccd640b78245", size = 18818, upload-time = "2023-03-10T11:13:09.953Z" }
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -405,11 +414,13 @@ dependencies = [
     { name = "anthropic" },
     { name = "datetime" },
     { name = "google-genai" },
+    { name = "google-search-results" },
     { name = "load-dotenv" },
     { name = "openai" },
     { name = "optional" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "serpapi" },
 ]
 
 [package.metadata]
@@ -417,11 +428,13 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.96.0" },
     { name = "datetime", specifier = ">=6.0" },
     { name = "google-genai", specifier = ">=1.73.1" },
+    { name = "google-search-results", specifier = ">=2.4.2" },
     { name = "load-dotenv", specifier = ">=0.1.0" },
     { name = "openai", specifier = ">=2.32.0" },
     { name = "optional", specifier = ">=0.0.1" },
     { name = "pydantic", specifier = ">=2.13.2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "serpapi", specifier = ">=1.0.2" },
 ]
 
 [[package]]
@@ -581,6 +594,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5f/a4/98b9c7c6428a668bf7e42ebb7c79d576a1c3c1e3ae2d47e674b468388871/requests-2.33.1.tar.gz", hash = "sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517", size = 134120, upload-time = "2026-03-30T16:09:15.531Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a", size = 64947, upload-time = "2026-03-30T16:09:13.83Z" },
+]
+
+[[package]]
+name = "serpapi"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8d/19/6af9f42d372d2d0012493155f5decf0a889f434e824a6b281ab2c8f88822/serpapi-1.0.2.tar.gz", hash = "sha256:06ff981129a1cb7c3706469a67f8d43e77ab295bcbdbfcb7c118d39e8efb0783", size = 16893, upload-time = "2026-03-18T14:29:16.448Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/80/21/6b33cea480c69992813fbd36bfdb622ead6e91c6ff259ee4b1143803769d/serpapi-1.0.2-py3-none-any.whl", hash = "sha256:4edb67318918c0ff460aae118d66f76ad83ab75fbf901a77a9722b0cfe6c70aa", size = 11768, upload-time = "2026-03-18T14:29:15.515Z" },
 ]
 
 [[package]]

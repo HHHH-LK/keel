@@ -326,6 +326,49 @@ class MyLLM:
         print(result)
         return result
 
+    def invoke(
+        self,
+        messages: list[dict[str, str]],
+        temperature: Optional[float] = None,
+        **kwargs,
+    ) -> str:
+        """非流式调用，返回完整文本。"""
+        return self.think(messages, temperature=temperature, stream=False)
+
+    def stream_invoke(
+        self,
+        messages: list[dict[str, str]],
+        temperature: Optional[float] = None,
+        **kwargs,
+    ):
+        """流式调用：逐 chunk yield 文本片段。"""
+        if not messages:
+            raise ValueError("messages 不能为空")
+
+        normalized = self._normalize_messages(messages)
+        actual_temperature = self.temperature if temperature is None else temperature
+
+        if self.provider in self.OPENAI_COMPATIBLE_PROVIDERS:
+            request_kwargs = {
+                "model": self.model,
+                "messages": normalized,
+                "temperature": actual_temperature,
+                "stream": True,
+            }
+            if self.max_tokens is not None:
+                request_kwargs["max_tokens"] = self.max_tokens
+            response = self.client.chat.completions.create(**request_kwargs)
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                content = chunk.choices[0].delta.content or ""
+                if content:
+                    yield content
+            return
+
+        # 非 OpenAI 兼容 provider 没有统一的流式接口，整体返回一次。
+        yield self.think(normalized, temperature=actual_temperature, stream=False)
+
     @staticmethod
     def _normalize_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
         normalized_messages = []

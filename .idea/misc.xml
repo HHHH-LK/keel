@@ -3,6 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="uv (my_agent_llms)" />
   </component>
-  <component name="KubernetesApiProvider"><![CDATA[{}]]></component>
   <component name="ProjectRootManager" version="2" project-jdk-name="uv (my_agent_llms)" project-jdk-type="Python SDK" />
 </project>
