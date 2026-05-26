@@ -41,6 +41,7 @@ class PendingEditStore:
 
     def put(self, pe: PendingEdit) -> None:
         with self._lock:
+            self._evict_expired_locked()  # 防止用户始终不 apply/cancel,字典无界增长
             self._items[pe.id] = pe
 
     def pop(self, pid: str) -> Optional[PendingEdit]:

@@ -48,9 +48,11 @@ def test_discard_removes_entry():
 
 
 def test_ttl_expiry():
+    """用 back-date 时间戳,避免 sleep 在慢 CI 上 flaky。"""
     store = PendingEditStore(ttl_seconds=1)
-    store.put(_make_pe())
-    time.sleep(1.1)
+    pe = _make_pe()
+    pe.created_at = time.time() - 2.0  # 已过期
+    store.put(pe)
     assert store.pop("abc") is None
 
 
