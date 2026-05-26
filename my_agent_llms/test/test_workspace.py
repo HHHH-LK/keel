@@ -26,6 +26,7 @@ def test_none_root_creates_auto_sandbox(monkeypatch, tmp_path):
     assert len(name) == 22
     assert name[8] == "-"
     assert name[15] == "-"
+    assert all(c in "0123456789abcdef" for c in name[16:])
 
 
 def test_manifest_path_is_under_root(tmp_path):

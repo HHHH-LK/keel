@@ -50,5 +50,5 @@ class Workspace:
 
         self.root: Path = root_path.resolve(strict=True)
         self.manifest_path: Path = self.root / "MANIFEST.json"
-        self._deny_dirs = frozenset(deny_dirs)
-        self._deny_suffixes = frozenset(deny_suffixes)
+        self._deny_dirs: frozenset[str] = frozenset(deny_dirs)
+        self._deny_suffixes: frozenset[str] = frozenset(deny_suffixes)
