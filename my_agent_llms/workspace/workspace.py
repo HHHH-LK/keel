@@ -52,3 +52,41 @@ class Workspace:
         self.manifest_path: Path = self.root / "MANIFEST.json"
         self._deny_dirs: frozenset[str] = frozenset(deny_dirs)
         self._deny_suffixes: frozenset[str] = frozenset(deny_suffixes)
+
+    # ── 路径守门 ────────────────────────────────────────────
+    def resolve(self, user_path: str) -> Path:
+        """把 user_path 解析到 sandbox 内绝对路径。
+        - 相对路径基于 self.root
+        - 绝对路径直接用,但必须落在 self.root 下
+        - 跟随符号链接,跟随后仍要在 self.root 下
+        - 命中 deny_dirs / deny_suffixes → raise
+        - 允许尚未存在的路径 (WriteFile 要建新文件)
+        """
+        up = Path(user_path).expanduser()
+        candidate = up if up.is_absolute() else (self.root / up)
+
+        # 父目录存在就解析父目录,再拼回文件名 —— 这样新建文件也能跟随中间链接
+        if candidate.exists():
+            p = candidate.resolve(strict=True)
+        else:
+            parent = candidate.parent
+            if parent.exists():
+                p = parent.resolve(strict=True) / candidate.name
+            else:
+                # 父也不存在 —— 用 resolve(strict=False) 做尽力解析
+                p = candidate.resolve()
+
+        try:
+            p.relative_to(self.root)
+        except ValueError:
+            raise WorkspaceViolation(f"路径越界: {p} 不在 workspace {self.root} 内")
+
+        for part in p.parts:
+            if part in self._deny_dirs:
+                raise WorkspaceViolation(f"路径命中黑名单目录: {p}")
+        if p.suffix in self._deny_suffixes:
+            raise WorkspaceViolation(f"文件类型在黑名单: {p.suffix}")
+        return p
+
+    def relative(self, p: Path) -> str:
+        return str(p.relative_to(self.root))
