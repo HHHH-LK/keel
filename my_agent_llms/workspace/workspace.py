@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import secrets
+import shutil
 from pathlib import Path
 from typing import Iterable
 
@@ -95,3 +96,55 @@ class Workspace:
 
     def relative(self, p: Path) -> str:
         return str(p.relative_to(self.root))
+
+    # ── Manifest 管理 ───────────────────────────────────────
+    def manifest(self) -> dict[str, str]:
+        if not self.manifest_path.exists():
+            return {}
+        with self.manifest_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _write_manifest(self, data: dict[str, str]) -> None:
+        tmp = self.manifest_path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(self.manifest_path)
+
+    def attach(self, source_path: str | Path) -> Path:
+        """把外部文件复制进 sandbox 根。返回 sandbox 内绝对路径。
+        - source 不存在 → FileNotFoundError
+        - source 命中 deny (按目录段 / 后缀) → WorkspaceViolation
+        - sandbox 已有同名文件 → FileExistsError
+        """
+        src = Path(source_path).expanduser()
+        if not src.exists():
+            raise FileNotFoundError(f"源文件不存在: {src}")
+        if not src.is_file():
+            raise IsADirectoryError(f"源不是文件: {src}")
+
+        src_resolved = src.resolve(strict=True)
+        for part in src_resolved.parts:
+            if part in self._deny_dirs:
+                raise WorkspaceViolation(f"源文件命中黑名单目录: {src_resolved}")
+        if src_resolved.suffix in self._deny_suffixes:
+            raise WorkspaceViolation(f"源文件类型在黑名单: {src_resolved.suffix}")
+
+        dst = self.root / src_resolved.name
+        if dst.exists():
+            raise FileExistsError(f"sandbox 已有同名文件: {self.relative(dst)}")
+
+        shutil.copy2(src_resolved, dst)
+        m = self.manifest()
+        m[self.relative(dst)] = str(src_resolved)
+        self._write_manifest(m)
+        return dst
+
+    def origin_of(self, sandbox_path: str | Path) -> Path | None:
+        """查 sandbox 文件对应的原始源路径。未在 manifest 中 → None。"""
+        p = Path(sandbox_path).resolve()
+        try:
+            rel = str(p.relative_to(self.root))
+        except ValueError:
+            return None
+        src = self.manifest().get(rel)
+        return Path(src) if src else None

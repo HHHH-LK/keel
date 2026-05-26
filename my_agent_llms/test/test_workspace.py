@@ -109,3 +109,66 @@ def test_relative_strips_root(tmp_path):
     sub.parent.mkdir()
     sub.write_text("x")
     assert ws.relative(sub.resolve()) == "a/b.md"
+
+
+def _make_ws(tmp_path) -> tuple[Workspace, Path]:
+    """统一 fixture: sandbox 在 tmp_path/sandbox,outside 在 tmp_path/outside"""
+    sandbox = tmp_path / "sandbox"
+    outside = tmp_path / "outside"
+    sandbox.mkdir()
+    outside.mkdir()
+    return Workspace(sandbox), outside
+
+
+def test_manifest_empty_when_no_file(tmp_path):
+    ws = Workspace(tmp_path)
+    assert ws.manifest() == {}
+
+
+def test_attach_copies_file_and_updates_manifest(tmp_path):
+    ws, outside = _make_ws(tmp_path)
+    src = outside / "report.md"
+    src.write_text("hello 2024")
+
+    dst = ws.attach(src)
+
+    assert dst == ws.root / "report.md"
+    assert dst.read_text() == "hello 2024"
+    assert ws.manifest() == {"report.md": str(src.resolve())}
+
+
+def test_attach_rejects_missing_source(tmp_path):
+    ws, outside = _make_ws(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        ws.attach(outside / "no_such_file.md")
+
+
+def test_attach_rejects_deny_source(tmp_path):
+    ws, outside = _make_ws(tmp_path)
+    src = outside / "private.pem"
+    src.write_text("KEY")
+    with pytest.raises(WorkspaceViolation, match="黑名单"):
+        ws.attach(src)
+
+
+def test_attach_refuses_existing_target(tmp_path):
+    ws, outside = _make_ws(tmp_path)
+    (ws.root / "report.md").write_text("existing")
+    src = outside / "report.md"
+    src.write_text("incoming")
+    with pytest.raises(FileExistsError):
+        ws.attach(src)
+
+
+def test_origin_of_attached_file(tmp_path):
+    ws, outside = _make_ws(tmp_path)
+    src = outside / "a.md"
+    src.write_text("x")
+    dst = ws.attach(src)
+    assert ws.origin_of(dst) == src.resolve()
+
+
+def test_origin_of_unmapped_file(tmp_path):
+    ws, _ = _make_ws(tmp_path)
+    (ws.root / "new.md").write_text("brand new")
+    assert ws.origin_of(ws.root / "new.md") is None
