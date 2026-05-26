@@ -80,6 +80,15 @@ def test_resolve_blocks_symlink_escape(tmp_path):
         ws.resolve("link.txt")
 
 
+def test_resolve_blocks_broken_symlink_escape(tmp_path):
+    """悬空符号链接也必须拦截 —— 否则 LLM 写入会逃逸到外部。"""
+    ws = Workspace(tmp_path)
+    link = tmp_path / "dangling.txt"
+    link.symlink_to(tmp_path.parent / "nonexistent_outside.txt")
+    with pytest.raises(WorkspaceViolation, match="路径越界"):
+        ws.resolve("dangling.txt")
+
+
 def test_resolve_blocks_deny_dir(tmp_path):
     ws = Workspace(tmp_path)
     (tmp_path / ".git").mkdir()

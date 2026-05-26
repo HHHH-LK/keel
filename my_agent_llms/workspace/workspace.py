@@ -65,15 +65,20 @@ class Workspace:
         up = Path(user_path).expanduser()
         candidate = up if up.is_absolute() else (self.root / up)
 
-        # 父目录存在就解析父目录,再拼回文件名 —— 这样新建文件也能跟随中间链接
-        if candidate.exists():
+        # 必须先看是不是符号链接 —— is_symlink() 对悬空链接也有效,
+        # 否则悬空链接的 exists() 返回 False 会落到拼路径分支,LLM 一旦
+        # 写入,OS 仍会跟随链接到 sandbox 外,构成写入逃逸。
+        if candidate.is_symlink():
+            p = candidate.resolve(strict=False)
+        elif candidate.exists():
             p = candidate.resolve(strict=True)
         else:
+            # 新建文件:父目录存在就解析父目录,再拼回文件名
             parent = candidate.parent
             if parent.exists():
                 p = parent.resolve(strict=True) / candidate.name
             else:
-                # 父也不存在 —— 用 resolve(strict=False) 做尽力解析
+                # 父也不存在 —— resolve(strict=False) 尽力而为
                 p = candidate.resolve()
 
         try:
