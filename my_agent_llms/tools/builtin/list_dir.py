@@ -24,8 +24,9 @@ class ListDir(Tool):
         path = str(parameters.get("path") or "").strip() or "."
         pattern = str(parameters.get("pattern") or "*")
 
+        raw_depth = parameters.get("max_depth")
         try:
-            max_depth = int(parameters.get("max_depth") or 2)
+            max_depth = int(raw_depth) if raw_depth is not None else 2
         except (ValueError, TypeError):
             return "❌ max_depth 必须为整数"
 
