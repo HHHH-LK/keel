@@ -42,8 +42,15 @@ class ReadFile(Tool):
 
         lines = text.splitlines()
         total = len(lines)
-        offset = int(parameters.get("offset") or 0)
-        limit = int(parameters.get("limit") or DEFAULT_LIMIT)
+
+        if total == 0:
+            return f"# {self._safe_rel(p)} (空文件)\n"
+
+        try:
+            offset = int(parameters.get("offset") or 0)
+            limit = int(parameters.get("limit") or DEFAULT_LIMIT)
+        except (ValueError, TypeError):
+            return "❌ offset/limit 必须为整数"
         if offset < 0:
             offset = 0
         if limit <= 0:
