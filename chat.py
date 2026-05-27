@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -285,7 +284,7 @@ def cmd_kg(cli) -> None:
         console.print()
         console.print("  [dim]paste into https://mermaid.live to render[/dim]")
     except Exception as exc:
-        console.print(f"  [red]export failed: {exc}[/red]")
+        help_view.print_error(console, f"export failed: {exc}")
 
 
 def cmd_recall(cli, query: str) -> None:
@@ -319,9 +318,9 @@ def cmd_remember(cli, arg: str) -> None:
         help_view.print_warn(console, "用法: /remember <内容>  例如: /remember 我对花生过敏")
         return
     card = cli.agent.memory.remember(arg)
-    console.print(
-        f"  [green]✓[/green] 记下了 "
-        f"[dim](type={card.type.value}, id={card.id})[/dim]"
+    help_view.print_ok(
+        console,
+        f"记下了 [{theme.DIM}](type={card.type.value}, id={card.id})[/]",
     )
 
 
@@ -340,13 +339,13 @@ def cmd_forget(cli, arg: str) -> None:
         console.print("  [dim]没找到匹配的卡片[/dim]")
         return
     if len(matches) > 1:
-        console.print("  [yellow]匹配多张,请输入更长的 id 前缀:[/yellow]")
+        help_view.print_warn(console, "匹配多张,请输入更长的 id 前缀:")
         for c in matches:
             console.print(f"    {c.id}  {c.content[:60]}")
         return
     card = matches[0]
     cli.agent.memory.forget(card.id)
-    console.print(f"  [green]✓[/green] 已忘记: [dim]{card.content[:60]}[/dim]")
+    help_view.print_ok(console, f"已忘记: [{theme.DIM}]{card.content[:60]}[/]")
 
 
 def cmd_pin(cli, arg: str) -> None:
@@ -364,11 +363,11 @@ def cmd_pin(cli, arg: str) -> None:
         console.print("  [dim]没找到匹配的卡片[/dim]")
         return
     if len(matches) > 1:
-        console.print("  [yellow]匹配多张,请输入更长的 id 前缀[/yellow]")
+        help_view.print_warn(console, "匹配多张,请输入更长的 id 前缀")
         return
     card = matches[0]
     cli.agent.memory.pin_card(card.id)
-    console.print(f"  [green]✓[/green] 已锁定: [dim]{card.content[:60]}[/dim]")
+    help_view.print_ok(console, f"已锁定: [{theme.DIM}]{card.content[:60]}[/]")
 
 
 def cmd_l0(cli, _arg: str) -> None:
@@ -418,9 +417,9 @@ def cmd_restore(cli, arg: str) -> None:
     if loaded == 0:
         console.print("  [dim]没有可恢复的历史 (L4 为空,或冷存储未启用)[/dim]")
     else:
-        console.print(
-            f"  [green]✓[/green] 从 L4 恢复了 "
-            f"[bright_white]{loaded}[/bright_white] 条历史回 L1"
+        help_view.print_ok(
+            console,
+            f"从 L4 恢复了 [bold]{loaded}[/] 条历史回 L1",
         )
 
 
