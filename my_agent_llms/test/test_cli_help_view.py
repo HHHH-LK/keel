@@ -63,3 +63,12 @@ def test_print_error_marks_red_and_includes_message():
 def test_print_ok_prints_check_and_message():
     out = _capture(lambda c: help_view.print_ok(c, "all good"))
     assert "all good" in out
+
+
+def test_mask_key_boundary_short_keys_get_more_protection():
+    """Lock in: short keys (≤10) expose only prefix; long keys (>10) get prefix+suffix."""
+    assert help_view._mask_key("") == f"[{help_view.theme.DIM}](not set)[/]"
+    assert help_view._mask_key("abc") == "ab…"
+    assert help_view._mask_key("0123456789") == "01…"           # exactly 10
+    assert help_view._mask_key("01234567890") == "012345…7890"  # 11 chars
+    assert help_view._mask_key("sk-abcdef1234567890") == "sk-abc…7890"
