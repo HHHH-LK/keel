@@ -2,7 +2,10 @@
 
 Layout:
     ─────────────────────────────────────────────
-    minimax / Text-01  ·  turn 7  ·  L1 1.2k/4k tokens
+    minimax / Text-01  ·  turn 7  ·  L1 1234/4.0k tokens
+
+Current L1 token count stays exact (so the user sees it grow precisely);
+the max is abbreviated because it's a constant ceiling.
 """
 from __future__ import annotations
 
