@@ -11,20 +11,9 @@ from my_agent_llms.tools.builtin.pending_edits import (
     PendingEditStore,
 )
 from my_agent_llms.workspace import (
-    DEFAULT_DENY_DIRS,
-    DEFAULT_DENY_SUFFIXES,
     Workspace,
     WorkspaceViolation,
 )
-
-
-def _check_dest_deny(dest: Path) -> None:
-    """对外部 dest 路径做黑名单校验(与 Workspace.resolve 内的规则一致)。"""
-    for part in dest.parts:
-        if part in DEFAULT_DENY_DIRS:
-            raise WorkspaceViolation(f"导出目标命中黑名单目录: {dest}")
-    if dest.suffix in DEFAULT_DENY_SUFFIXES:
-        raise WorkspaceViolation(f"导出目标文件类型在黑名单: {dest.suffix}")
 
 
 class ExportFile(Tool):
@@ -74,7 +63,7 @@ class ExportFile(Tool):
             dest = origin
 
         try:
-            _check_dest_deny(dest)
+            self.ws.check_external_path(dest)
         except WorkspaceViolation as e:
             return f"❌ {e}"
 
@@ -119,7 +108,7 @@ class ExportFile(Tool):
         if action not in ("apply", "cancel"):
             return "❌ action 必须是 apply 或 cancel"
         if action == "cancel":
-            return f"✅ 已取消 pending {pid}" if self.store.discard(pid) \
+            return f"✅ 已取消 pending {pid},文件未改动" if self.store.discard(pid) \
                 else f"❌ pending_id {pid} 不存在或已过期"
 
         pe = self.store.pop(pid)

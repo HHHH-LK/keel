@@ -97,6 +97,17 @@ class Workspace:
     def relative(self, p: Path) -> str:
         return str(p.relative_to(self.root))
 
+    def check_external_path(self, p: Path) -> None:
+        """对外部路径(不要求在 sandbox 内)做黑名单校验。
+        ExportFile 写回真实路径时调用,确保拿到 ExportFile 的 dest 也受
+        per-Workspace 自定义 deny 集合的保护,与 resolve()/attach() 对称。
+        """
+        for part in p.parts:
+            if part in self._deny_dirs:
+                raise WorkspaceViolation(f"导出目标命中黑名单目录: {p}")
+        if p.suffix in self._deny_suffixes:
+            raise WorkspaceViolation(f"导出目标文件类型在黑名单: {p.suffix}")
+
     # ── Manifest 管理 ───────────────────────────────────────
     def manifest(self) -> dict[str, str]:
         if not self.manifest_path.exists():
