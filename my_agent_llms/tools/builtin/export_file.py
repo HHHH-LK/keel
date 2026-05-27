@@ -84,6 +84,8 @@ class ExportFile(Tool):
             return f"❌ 非 UTF-8 编码: {self.ws.relative(sb)},本期不支持"
 
         if dest.exists():
+            if dest.is_dir():
+                return f"❌ dest_path 是目录,不是文件: {dest}"
             try:
                 old = dest.read_text(encoding="utf-8")
             except UnicodeDecodeError:
