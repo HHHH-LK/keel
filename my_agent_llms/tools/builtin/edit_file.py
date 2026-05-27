@@ -103,8 +103,45 @@ class EditFile(Tool):
 
     # ── 执行模式 ────────────────────────────────────────────
     def _handle_action(self, pid: str, action: str) -> str:
-        # 占位,Task 9 实现
-        return "❌ Task 9 will implement this"
+        if action not in ("apply", "cancel"):
+            return "❌ action 必须是 apply 或 cancel"
+
+        if action == "cancel":
+            if self.store.discard(pid):
+                return f"✅ 已取消 pending {pid},文件未改动"
+            return f"❌ pending_id {pid} 不存在或已过期"
+
+        # action == apply
+        pe = self.store.pop(pid)
+        if pe is None:
+            return f"❌ pending_id {pid} 不存在或已过期(7 分钟 TTL)。请重新发起编辑"
+
+        # hash 校验
+        if pe.source_hash is not None:
+            try:
+                current = pe.path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return f"❌ 目标文件已被删除: {pe.path}"
+            if _sha256(current) != pe.source_hash:
+                return (
+                    f"❌ 文件在确认期间被外部修改,pending 已失效。"
+                    f"请重新读取并发起编辑"
+                )
+
+        # 原子写: 先写 tmp 再 rename
+        tmp_path = pe.path.with_name(f".{pe.path.name}.tmp")
+        try:
+            tmp_path.write_text(pe.new_content, encoding="utf-8")
+            tmp_path.replace(pe.path)
+        except OSError as e:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            return f"❌ 写入失败: {e}。原文件未被改动"
+
+        return f"✅ 已修改 {self.ws.relative(pe.path)}"
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
