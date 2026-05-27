@@ -1,4 +1,46 @@
-.claude/
-.env
+# ---- Python ----
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- Test / type-check caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Secrets / local env ----
+.env
+.env.local
+*.local
+
+# ---- IDE / editor ----
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---- macOS ----
+.DS_Store
+
+# ---- Claude / agent runtime ----
+.claude/
+.omx/
+
+# ---- Backup / merge leftovers ----
+*.before-merge
+*.bak
+*.orig
+*.rej
+
+# ---- Project docs (local only) ----
+docs/
