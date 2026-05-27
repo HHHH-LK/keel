@@ -1,7 +1,6 @@
 """WriteFile —— 写整文件(覆盖或新建),两步确认。"""
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any, Dict, List
 
