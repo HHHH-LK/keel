@@ -16,24 +16,24 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-import random
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from dotenv import load_dotenv
-from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "WARNING").upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 from prompt_toolkit.shortcuts import radiolist_dialog
-from prompt_toolkit.styles import Style
-from rich.console import Console, Group
-from rich.markdown import Markdown
 from rich.prompt import Prompt
-from rich.text import Text
+
+from my_agent_llms.cli import banner, chat_view, help_view, status_bar, theme
+from my_agent_llms.cli.console import console
+from my_agent_llms.cli.prompt import build_session, prompt_html
 
 from my_agent_llms.agents.function_call_agent import MyFunctionCallAgent
 from my_agent_llms.core.llm import MyLLM
@@ -48,7 +48,6 @@ from my_agent_llms.tools.builtin.calculator import CalculatorTool
 
 
 load_dotenv()
-console = Console()
 
 
 # ────────────────────────────────────────────────────────────
@@ -101,7 +100,7 @@ def load_config() -> Dict:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             return _apply_env_fallback(_merge_defaults(data))
         except Exception as exc:
-            console.print(f"[yellow]⚠️ 配置文件损坏 ({exc}),用默认配置[/yellow]")
+            help_view.print_warn(console, f"配置文件损坏 ({exc}),用默认配置")
     return _apply_env_fallback(_merge_defaults({}))
 
 
@@ -153,7 +152,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
             base_url=cfg.get("base_url"),
         )
     except Exception as exc:
-        console.print(f"[red]LLM 初始化失败: {exc}[/red]")
+        help_view.print_error(console, f"LLM 初始化失败: {exc}")
         return None
 
     storage_dir = Path(os.getenv("MY_CHAT_STORAGE", str(DEFAULT_STORAGE_DIR)))
@@ -184,7 +183,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     try:
         ws = Workspace(cfg.get("workspace"))
     except (FileNotFoundError, NotADirectoryError) as exc:
-        console.print(f"[red]Workspace 初始化失败: {exc}[/red]")
+        help_view.print_error(console, f"Workspace 初始化失败: {exc}")
         return None
     console.print(f"[dim]Workspace: {ws.root}[/dim]")
     pe_store = PendingEditStore()
@@ -220,7 +219,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
             max_steps=5,
         )
     except Exception as exc:
-        console.print(f"[red]Agent 构造失败: {exc}[/red]")
+        help_view.print_error(console, f"Agent 构造失败: {exc}")
         return None
 
     # 升级 memory(embedding + summarizer + KG 等高级能力)
@@ -233,7 +232,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 llm=llm,
             )
         except Exception as exc:
-            console.print(f"[yellow]⚠️ embedding 升级失败 ({exc}),用 TF-IDF[/yellow]")
+            help_view.print_warn(console, f"embedding 升级失败 ({exc}),用 TF-IDF")
             agent.memory = MemoryManager(
                 memory_config,
                 summarizer=LLMSummarizer(llm, max_tokens=400),
@@ -254,40 +253,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
 # ────────────────────────────────────────────────────────────
 
 def cmd_help(_cli) -> None:
-    sections = [
-        ("Basic", [
-            ("/help",                          "show this help"),
-            ("/quit, /exit, Ctrl+D",           "exit"),
-            ("/multiline",                     "toggle multiline input (Esc+Enter)"),
-        ]),
-        ("Config", [
-            ("/config",                        "interactive wizard (↑↓ pick provider · enter model · paste key)"),
-            ("/config show",                   "show current config"),
-            ("/config provider <name>",        "openai/aliyun/zhipu/deepseek/minimax/..."),
-            ("/config model <id>",             "set model id"),
-            ("/config key",                    "set API key (hidden input)"),
-            ("/config base_url <url>",         "set base url"),
-            ("/config cold <jsonl|sqlite>",    "cold storage backend"),
-            ("/config vector <memory|sqlite>", "vector store backend"),
-            ("/config conflict <strength>",    "off|fast|accurate|extreme"),
-            ("/config tick <mode>",            "sync|async|off"),
-            ("/config embedding <on|off>",     "toggle OpenAI embedding"),
-            ("/config reset",                  "reset all config"),
-        ]),
-        ("Memory", [
-            ("/clear",                         "clear conversation context (L1+L2, keeps L4/L5)"),
-            ("/memory",                        "show memory stats"),
-            ("/kg",                            "export knowledge graph (mermaid)"),
-            ("/recall <query>",                "search long-term memory"),
-            ("/facts <query>",                 "query KG facts"),
-        ]),
-    ]
-    console.print()
-    for title, rows in sections:
-        console.print(f"  [bold]{title}[/bold]")
-        for cmd, desc in rows:
-            console.print(f"    [cyan]{cmd:<34}[/cyan] [dim]{desc}[/dim]")
-        console.print()
+    help_view.render_help(console)
 
 
 def cmd_clear(cli) -> None:
@@ -302,21 +268,9 @@ def cmd_clear(cli) -> None:
 
 def cmd_memory(cli) -> None:
     if cli.agent is None:
-        console.print("[yellow]Agent 未构建。先用 /config key 配置好 API Key。[/yellow]")
+        help_view.print_warn(console, "Agent not ready. Run /config key first.")
         return
-    stats = cli.agent.memory.stats()
-    labels = {
-        "l1_items":  "L1 items",
-        "l1_tokens": "L1 tokens",
-        "l2_tokens": "L2 summary tokens",
-        "l4_items":  "L4 cold items",
-        "l5_items":  "L5 vector items",
-    }
-    console.print()
-    console.print("  [bold]Memory stats[/bold]")
-    for k, v in stats.items():
-        console.print(f"    [dim]{labels.get(k, k):<22}[/dim] [bright_white]{v}[/bright_white]")
-    console.print()
+    help_view.render_memory_stats(console, cli.agent.memory.stats())
 
 
 def cmd_kg(cli) -> None:
@@ -354,12 +308,127 @@ def cmd_recall(cli, query: str) -> None:
     console.print()
 
 
+def cmd_remember(cli, arg: str) -> None:
+    """显式添加一张 L0 卡片(跨会话保留)。用法: /remember <内容>"""
+    if cli.agent is None:
+        help_view.print_warn(console, "Agent 未构建。先用 /config key 配置好 API Key。")
+        return
+    arg = arg.strip()
+    if not arg:
+        help_view.print_warn(console, "用法: /remember <内容>  例如: /remember 我对花生过敏")
+        return
+    card = cli.agent.memory.remember(arg)
+    console.print(
+        f"  [green]✓[/green] 记下了 "
+        f"[dim](type={card.type.value}, id={card.id})[/dim]"
+    )
+
+
+def cmd_forget(cli, arg: str) -> None:
+    """忘记一张 L0 卡片。用法: /forget <id 或 id 前缀>"""
+    if cli.agent is None:
+        help_view.print_warn(console, "Agent 未构建")
+        return
+    arg = arg.strip()
+    if not arg:
+        help_view.print_warn(console, "用法: /forget <id 或 id 前缀>  (先用 /l0 看 id)")
+        return
+    cards = cli.agent.memory.list_l0()
+    matches = [c for c in cards if c.id.startswith(arg)]
+    if not matches:
+        console.print("  [dim]没找到匹配的卡片[/dim]")
+        return
+    if len(matches) > 1:
+        console.print("  [yellow]匹配多张,请输入更长的 id 前缀:[/yellow]")
+        for c in matches:
+            console.print(f"    {c.id}  {c.content[:60]}")
+        return
+    card = matches[0]
+    cli.agent.memory.forget(card.id)
+    console.print(f"  [green]✓[/green] 已忘记: [dim]{card.content[:60]}[/dim]")
+
+
+def cmd_pin(cli, arg: str) -> None:
+    """锁定一张 L0 卡片,永不衰减。用法: /pin <id 或 id 前缀>"""
+    if cli.agent is None:
+        help_view.print_warn(console, "Agent 未构建")
+        return
+    arg = arg.strip()
+    if not arg:
+        help_view.print_warn(console, "用法: /pin <id 或 id 前缀>")
+        return
+    cards = cli.agent.memory.list_l0()
+    matches = [c for c in cards if c.id.startswith(arg)]
+    if not matches:
+        console.print("  [dim]没找到匹配的卡片[/dim]")
+        return
+    if len(matches) > 1:
+        console.print("  [yellow]匹配多张,请输入更长的 id 前缀[/yellow]")
+        return
+    card = matches[0]
+    cli.agent.memory.pin_card(card.id)
+    console.print(f"  [green]✓[/green] 已锁定: [dim]{card.content[:60]}[/dim]")
+
+
+def cmd_l0(cli, _arg: str) -> None:
+    """列出当前 active 的 L0 卡片。"""
+    if cli.agent is None:
+        help_view.print_warn(console, "Agent 未构建")
+        return
+    cards = cli.agent.memory.list_l0()
+    if not cards:
+        console.print("  [dim]L0 为空。用 /remember <内容> 添加,或聊天产生重要内容时自动晋升。[/dim]")
+        return
+    type_emoji = {
+        "hard_constraint": "🔒",
+        "identity": "👤",
+        "preference": "❤️",
+        "state": "📌",
+    }
+    console.print()
+    console.print(f"  [bold]L0 核心卡片[/bold]  [dim]({len(cards)} 条)[/dim]")
+    for c in cards:
+        emoji = type_emoji.get(c.type.value, "·")
+        pinned = " [red]📌[/red]" if c.user_pinned else ""
+        console.print(
+            f"  {emoji}  [cyan]{c.id[:8]}[/cyan]  "
+            f"[dim]c={c.confidence:.2f}[/dim]  "
+            f"{c.content[:80]}{pinned}"
+        )
+    console.print()
+
+
+def cmd_restore(cli, arg: str) -> None:
+    """从 L4 把最近 N 条历史拉回 L1。用法: /restore [N]  默认 N=10。"""
+    if cli.agent is None:
+        help_view.print_warn(console, "Agent 未构建。先用 /config key 配置好 API Key。")
+        return
+    arg = arg.strip()
+    n = 10
+    if arg:
+        try:
+            n = int(arg)
+            if n <= 0:
+                raise ValueError
+        except ValueError:
+            help_view.print_warn(console, "用法: /restore [N]  (N 为正整数,默认 10)")
+            return
+    loaded = cli.agent.memory.restore_from_cold(n)
+    if loaded == 0:
+        console.print("  [dim]没有可恢复的历史 (L4 为空,或冷存储未启用)[/dim]")
+    else:
+        console.print(
+            f"  [green]✓[/green] 从 L4 恢复了 "
+            f"[bright_white]{loaded}[/bright_white] 条历史回 L1"
+        )
+
+
 def cmd_facts(cli, query: str) -> None:
     if cli.agent is None:
-        console.print("[yellow]Agent 未构建。[/yellow]")
+        help_view.print_warn(console, "Agent 未构建。")
         return
     if not query:
-        console.print("[yellow]用法: /facts <查询词>[/yellow]")
+        help_view.print_warn(console, "用法: /facts <查询词>")
         return
     facts = cli.agent.memory.recall_facts(query)
     if not facts:
@@ -374,32 +443,12 @@ def cmd_facts(cli, query: str) -> None:
 # ────────────────────────────────────────────────────────────
 
 def cmd_show_config(cli) -> None:
-    cfg = cli.cfg
-    masked_key = (cfg["api_key"][:6] + "…" + cfg["api_key"][-4:]) if cfg.get("api_key") else "[dim](not set)[/dim]"
-
-    def row(k: str, v: str) -> None:
-        console.print(f"    [dim]{k:<20}[/dim] {v}")
-
-    console.print()
-    console.print("  [bold]LLM[/bold]")
-    row("provider_key", f"[cyan]{cfg.get('provider_key', '?')}[/cyan]")
-    row("provider",     cfg["provider"])
-    row("model",        cfg["model"] or "[dim](not set)[/dim]")
-    row("base_url",     str(cfg.get("base_url", "") or "[dim]—[/dim]"))
-    row("api_key",      masked_key)
-    console.print()
-    console.print("  [bold]Memory[/bold]")
-    mem = cfg["memory"]
-    row("cold_backend",      mem["cold_backend"])
-    row("vector_backend",    mem["vector_backend"])
-    row("conflict_strength", mem["conflict_strength"])
-    row("tick_mode",         mem["tick_mode"])
-    row("use_embedding",     "on" if mem["use_embedding"] else "[dim]off[/dim]")
-    console.print()
-    console.print("  [bold]Meta[/bold]")
-    row("config path", f"[dim]{CONFIG_PATH}[/dim]")
-    row("agent",       "[green]ready[/green]" if cli.agent else "[red]not ready[/red]")
-    console.print()
+    help_view.render_config_show(
+        console,
+        cli.cfg,
+        agent_ready=cli.agent is not None,
+        config_path=str(CONFIG_PATH),
+    )
 
 
 def cmd_setup_wizard(cli) -> None:
@@ -486,10 +535,10 @@ def cmd_setup_wizard(cli) -> None:
 def cmd_set_provider(cli, value: str) -> None:
     value = value.strip()
     if not value:
-        console.print(f"[yellow]可选: {', '.join(PROVIDER_PRESETS.keys())}[/yellow]")
+        help_view.print_warn(console, f"可选: {', '.join(PROVIDER_PRESETS.keys())}")
         return
     if value not in PROVIDER_PRESETS:
-        console.print(f"[red]未知厂商: {value}。可选: {', '.join(PROVIDER_PRESETS.keys())}[/red]")
+        help_view.print_error(console, f"未知厂商: {value}。可选: {', '.join(PROVIDER_PRESETS.keys())}")
         return
     _label, provider, base_url, default_model = PROVIDER_PRESETS[value]
     cli.cfg["provider_key"] = value
@@ -499,18 +548,18 @@ def cmd_set_provider(cli, value: str) -> None:
     if default_model and not cli.cfg["model"]:
         cli.cfg["model"] = default_model
     save_config(cli.cfg)
-    console.print(f"[green]✓ provider 改为 {value} (provider={provider}, base_url={base_url})[/green]")
+    help_view.print_ok(console, f"provider 改为 {value} (provider={provider}, base_url={base_url})")
     cli.rebuild_agent()
 
 
 def cmd_set_simple(cli, field: str, value: str) -> None:
     value = value.strip()
     if not value:
-        console.print(f"[yellow]用法: /config {field} <值>[/yellow]")
+        help_view.print_warn(console, f"用法: /config {field} <值>")
         return
     cli.cfg[field] = value
     save_config(cli.cfg)
-    console.print(f"[green]✓ {field} = {value}[/green]")
+    help_view.print_ok(console, f"{field} = {value}")
     cli.rebuild_agent()
 
 
@@ -519,44 +568,44 @@ def cmd_set_key(cli) -> None:
     try:
         key = Prompt.ask("API Key", password=True, default=cli.cfg.get("api_key", ""), show_default=False).strip()
     except (KeyboardInterrupt, EOFError):
-        console.print("\n[yellow]已取消[/yellow]")
+        help_view.print_warn(console, "已取消")
         return
     if not key:
-        console.print("[yellow]空值,未修改[/yellow]")
+        help_view.print_warn(console, "空值,未修改")
         return
     cli.cfg["api_key"] = key
     save_config(cli.cfg)
-    console.print("[green]✓ API Key 已更新[/green]")
+    help_view.print_ok(console, "API Key 已更新")
     cli.rebuild_agent()
 
 
 def cmd_set_memory(cli, mem_field: str, value: str, valid: list) -> None:
     value = value.strip()
     if value not in valid:
-        console.print(f"[yellow]可选: {', '.join(valid)}[/yellow]")
+        help_view.print_warn(console, f"可选: {', '.join(valid)}")
         return
     cli.cfg["memory"][mem_field] = value
     save_config(cli.cfg)
-    console.print(f"[green]✓ memory.{mem_field} = {value}[/green]")
+    help_view.print_ok(console, f"memory.{mem_field} = {value}")
     cli.rebuild_agent()
 
 
 def cmd_set_embedding(cli, value: str) -> None:
     value = value.strip().lower()
     if value not in ("on", "off", "true", "false"):
-        console.print("[yellow]用法: /config embedding on|off[/yellow]")
+        help_view.print_warn(console, "用法: /config embedding on|off")
         return
     on = value in ("on", "true")
     cli.cfg["memory"]["use_embedding"] = on
     save_config(cli.cfg)
-    console.print(f"[green]✓ embedding = {'启用' if on else '关闭'}[/green]")
+    help_view.print_ok(console, f"embedding = {'启用' if on else '关闭'}")
     cli.rebuild_agent()
 
 
 def cmd_config_reset(cli) -> None:
     cli.cfg = _merge_defaults({})
     save_config(cli.cfg)
-    console.print("[green]✓ 配置已重置为默认 (api_key 也被清空)[/green]")
+    help_view.print_ok(console, "配置已重置为默认 (api_key 也被清空)")
     cli.rebuild_agent()
 
 
@@ -586,32 +635,11 @@ def cmd_config(cli, args: str) -> None:
         cmd_show_config(cli)
         return
     if sub not in CONFIG_DISPATCH:
-        console.print(f"[yellow]未知子命令: {sub}[/yellow]")
+        help_view.print_warn(console, f"未知子命令: {sub}")
         console.print(f"[dim]可用: show, {', '.join(CONFIG_DISPATCH.keys())} (或直接 /config 进入向导)[/dim]")
         return
     _label, handler = CONFIG_DISPATCH[sub]
     handler(cli, value)
-
-
-# ────────────────────────────────────────────────────────────
-# 皮卡丘姿势池 —— banner 启动随机抽
-# eye_l/eye_r 必须 1-char(对齐),mouth 必须 4-char(居中槽位)
-# ────────────────────────────────────────────────────────────
-
-POSES: Dict[str, List[Dict[str, str]]] = {
-    "happy": [
-        {"eye_l": "o", "eye_r": "o", "mouth": "\\__/", "line": "你好呀~"},
-        {"eye_l": "-", "eye_r": "-", "mouth": "\\__/", "line": "⚡!"},      # 蓄电
-        {"eye_l": "^", "eye_r": "^", "mouth": "\\oo/", "line": "♪ ♬"},      # 哼歌
-        {"eye_l": "♥", "eye_r": "♥", "mouth": "\\__/", "line": "今天也加油~"},
-        {"eye_l": ">", "eye_r": "<", "mouth": "\\__/", "line": "嘿嘿"},
-        {"eye_l": "o", "eye_r": "o", "mouth": " ?? ", "line": "...?"},
-        {"eye_l": "-", "eye_r": "o", "mouth": "\\__/", "line": "miss you~"},  # 眨眼
-    ],
-    "sleepy": [
-        {"eye_l": "-", "eye_r": "-", "mouth": "\\zz/", "line": "··· zzz"},
-    ],
-}
 
 
 # ────────────────────────────────────────────────────────────
@@ -625,24 +653,11 @@ class ChatCLI:
         self.multiline = False
         self.history_path = Path.home() / ".my_chat_history"
 
-        kb = KeyBindings()
-
-        @kb.add("c-l")
-        def _(event):
-            console.clear()
-
-        prompt_style = Style.from_dict({
-            "prompt.ready":    "ansibrightblack",
-            "prompt.notready": "ansired",
-            "prompt.arrow":    "ansicyan",
-        })
-
-        self.session = PromptSession(
-            history=FileHistory(str(self.history_path)),
-            auto_suggest=AutoSuggestFromHistory(),
-            key_bindings=kb,
-            style=prompt_style,
+        self.session = build_session(
+            history_path=self.history_path,
+            clear_screen=console.clear,
         )
+        self.turn = 0  # for status bar
 
     def rebuild_agent(self) -> None:
         """配置变更后调,优雅关闭旧的、用新 cfg 重建。"""
@@ -656,110 +671,56 @@ class ChatCLI:
             console.print("[dim]Agent 已就绪[/dim]")
 
     def print_banner(self) -> None:
-        """6 行中等皮卡丘 + 闪电尾巴 + 上下闪电分隔条。ready/not ready 抽不同 pool。
-
-        图案结构(对称,以视觉中线为轴):
-              /\\__      __/\\        ← 耳朵尖
-             /   \\____/   \\          ← 头顶弧
-            |  o        o  |         ← 眼睛 (随机表情)
-            |     \\__/     |         ← 嘴 (随机表情)
-             \\____________/          ← 下颌
-                  \\__/⚡             ← 闪电尾巴
-        """
         ready = self.agent is not None
-        pose = random.choice(POSES["happy" if ready else "sleepy"])
-
-        Y     = "yellow"
-        BOLT  = "bold bright_yellow"
-        LINE  = "bright_cyan"
-        CHEEK = "bright_red"
-
-        PIKA = "   "   # 皮卡丘整体左缩进 (3 chars,让最左 / 字符落在 col 4)
-        LEAD = "    "  # 标题/状态行左缩进 (4 chars,跟皮卡丘左缘对齐)
-
-        # 上/下闪电分隔条 ——  ⚡━━━…━━━⚡
-        # 60 个 ━ + 两端 ⚡(East Asian Wide,2 cols) ≈ 64 visible cols
-        bolt_bar = Text("  ")
-        bolt_bar.append("⚡", style=BOLT)
-        bolt_bar.append("━" * 60, style=BOLT)
-        bolt_bar.append("⚡", style=BOLT)
-
-        # 皮卡丘 6 行
-        row_ears  = Text(f"{PIKA}  /\\__      __/\\", style=Y)
-        row_top   = Text(f"{PIKA} /   \\____/   \\", style=Y)
-
-        # 眼睛行 + 右侧旁白
-        row_eyes = Text(PIKA)
-        row_eyes.append("|  ", style=Y)
-        row_eyes.append(pose["eye_l"], style="bold")
-        row_eyes.append("        ", style=Y)
-        row_eyes.append(pose["eye_r"], style="bold")
-        row_eyes.append("  |", style=Y)
-        row_eyes.append(f"    {pose['line']}", style=LINE)
-
-        # 嘴行
-        row_mouth = Text(PIKA)
-        row_mouth.append("|     ", style=Y)
-        row_mouth.append(pose["mouth"], style=CHEEK if ready else Y)
-        row_mouth.append("     |", style=Y)
-
-        row_chin = Text(f"{PIKA} \\____________/", style=Y)
-
-        # 闪电尾巴
-        row_tail = Text(PIKA)
-        row_tail.append("      \\__/", style=Y)
-        row_tail.append("⚡", style=BOLT)
-
-        # 标题
-        title = Text(LEAD)
-        title.append("⚡ ", style=BOLT)
-        title.append("MY AI 伙伴", style="bold bright_yellow")
-        title.append("  ·  ", style="dim")
-        title.append("v0.1", style="dim")
-
-        # 状态 + 命令提示
-        status = Text(LEAD)
-        if ready:
-            status.append("● ", style="green bold")
-            status.append("ready", style="green")
-            status.append("  ·  ", style="dim")
-            status.append(f"{self.cfg['provider_key']} / {self.cfg['model']}", style="cyan")
-            cmds = Text(f"{LEAD}/help · /config · /memory · /clear", style="dim")
-        else:
-            status.append("○ ", style="red bold")
-            status.append("not ready", style="red")
-            status.append("  —  ", style="dim")
-            status.append("run ", style="dim")
-            status.append("/config key", style="cyan bold")
-            cmds = Text(f"{LEAD}/help · /config", style="dim")
-
-        console.print()
-        console.print(Group(
-            bolt_bar,
-            Text(""),
-            row_ears, row_top, row_eyes, row_mouth, row_chin, row_tail,
-            Text(""),
-            title,
-            status,
-            cmds,
-            Text(""),
-            bolt_bar,
-        ))
-        console.print()
+        ws_path = None
+        tool_count = 0
+        backend_label = ""
+        if self.agent is not None:
+            mem = self.cfg.get("memory", {})
+            backend_label = f"L4 cold: {mem.get('cold_backend', '?')}"
+            # Count tools + locate workspace from any workspace-bearing tool
+            try:
+                tools = list(self.agent.tool_registry._tools.values())
+            except AttributeError:
+                tools = []
+            tool_count = len(tools)
+            for tool in tools:
+                ws = getattr(tool, "workspace", None)
+                if ws is not None:
+                    ws_path = ws.root
+                    break
+        banner.render(
+            console,
+            ready=ready,
+            provider_key=self.cfg.get("provider_key", "?"),
+            model=self.cfg.get("model", ""),
+            backend_label=backend_label,
+            tool_count=tool_count,
+            workspace=ws_path,
+        )
 
     def get_input(self) -> str:
-        # 简洁的 ❯ prompt,跟 Claude Code 风格一致
-        # 不在前后加横线 —— prompt_toolkit 在宽终端下会让横线看起来被拉伸
-        console.print()
-        if self.multiline:
-            prompt_html = HTML(
-                "<prompt.arrow>❯</prompt.arrow> "
-                "<prompt.ready>multiline</prompt.ready> "
-                "<prompt.arrow>›</prompt.arrow> "
-            )
-        else:
-            prompt_html = HTML("<prompt.arrow>❯</prompt.arrow> ")
-        return self.session.prompt(prompt_html, multiline=self.multiline).strip()
+        # Per-turn status line then ❯ prompt
+        l1_tokens = 0
+        if self.agent is not None:
+            try:
+                l1_tokens = self.agent.memory.stats().get("l1_tokens", 0)
+            except Exception:
+                pass
+        status_bar.render(
+            console,
+            ready=self.agent is not None,
+            provider_key=self.cfg.get("provider_key", "?"),
+            model=self.cfg.get("model", ""),
+            turn=self.turn,
+            l1_tokens=l1_tokens,
+            l1_max_tokens=4000,
+            multiline=self.multiline,
+        )
+        return self.session.prompt(
+            prompt_html(self.multiline),
+            multiline=self.multiline,
+        ).strip()
 
     def handle_command(self, line: str) -> bool:
         if not line.startswith("/"):
@@ -782,44 +743,50 @@ class ChatCLI:
             cmd_kg(self); return True
         if cmd == "/recall":
             cmd_recall(self, arg); return True
+        if cmd == "/restore":
+            cmd_restore(self, arg); return True
         if cmd == "/facts":
             cmd_facts(self, arg); return True
+        if cmd == "/remember":
+            cmd_remember(self, arg); return True
+        if cmd == "/forget":
+            cmd_forget(self, arg); return True
+        if cmd == "/pin":
+            cmd_pin(self, arg); return True
+        if cmd == "/l0":
+            cmd_l0(self, arg); return True
         if cmd == "/multiline":
             self.multiline = not self.multiline
             console.print(f"[dim]多行输入: {'开启 (Esc+Enter 提交)' if self.multiline else '关闭'}[/dim]")
             return True
 
-        console.print(f"[yellow]未知命令: {cmd}  (用 /help)[/yellow]")
+        help_view.print_warn(console, f"未知命令: {cmd}  (用 /help)")
         return True
 
-    def render_response(self, response: str) -> None:
-        console.print()
-        console.print("[bright_green]●[/bright_green] ", end="")
-        console.print(Markdown(response))
-
     def chat_once(self, user_input: str) -> None:
+        chat_view.render_user(console, user_input)
+
         if self.agent is None:
-            console.print()
-            console.print("[red]●[/red] [bold]Agent not ready[/bold] [dim]— missing API key[/dim]")
-            console.print()
-            console.print("  [dim]Run these to set up:[/dim]")
-            console.print("    [cyan]/config provider <name>[/cyan]  [dim](e.g. minimax)[/dim]")
-            console.print("    [cyan]/config model <id>[/cyan]")
-            console.print("    [cyan]/config key[/cyan]")
+            chat_view.print_not_ready_hint(console)
             return
 
+        import time
+        start = time.monotonic()
         try:
             with console.status(
-                "[bright_black]thinking…[/bright_black]",
+                f"[{theme.AGENT}]伙伴[/] [{theme.DIM}]·  thinking…[/]",
                 spinner="dots",
-                spinner_style="bright_black",
+                spinner_style=theme.AGENT,
             ):
                 response = self.agent.run(user_input)
         except Exception as exc:
-            console.print()
-            console.print(f"[red]●[/red] [bold red]error:[/bold red] [red]{exc}[/red]")
+            chat_view.render_agent_error(console, str(exc))
             return
-        self.render_response(response)
+
+        elapsed = time.monotonic() - start
+        chat_view.render_agent(console, response,
+                               tools_used=0, elapsed_seconds=elapsed)
+        self.turn += 1
 
     def run(self) -> None:
         self.print_banner()
