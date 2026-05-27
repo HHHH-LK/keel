@@ -65,6 +65,13 @@ def test_render_agent_error_uses_error_marker():
     assert "boom" in out
 
 
+def test_render_agent_error_message_carries_bar_prefix():
+    out = _capture(chat_view.render_agent_error, "connection failed")
+    msg_lines = [line for line in out.splitlines() if "connection failed" in line]
+    assert msg_lines, "error message should appear in output"
+    assert all("┃" in line for line in msg_lines), msg_lines
+
+
 def test_print_not_ready_hint_mentions_config_key():
     out = _capture(chat_view.print_not_ready_hint)
     assert "not ready" in out.lower() or "missing" in out.lower()
