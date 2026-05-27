@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -770,7 +771,6 @@ class ChatCLI:
             chat_view.print_not_ready_hint(console)
             return
 
-        import time
         start = time.monotonic()
         try:
             with console.status(
@@ -784,6 +784,7 @@ class ChatCLI:
             return
 
         elapsed = time.monotonic() - start
+        # TODO: surface real tool-call count once agent exposes it; 0 hides the indicator
         chat_view.render_agent(console, response,
                                tools_used=0, elapsed_seconds=elapsed)
         self.turn += 1
