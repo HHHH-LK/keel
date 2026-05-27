@@ -11,7 +11,7 @@ def test_all_color_constants_render_without_error():
         theme.YOU, theme.AGENT, theme.ACCENT,
         theme.LOGO_L, theme.LOGO_R, theme.TITLE,
         theme.OK, theme.WARN, theme.ERR,
-        theme.DIM, theme.RULE,
+        theme.DIM, theme.RULE, theme.DEFAULT,
     ]
     for color in colors:
         t = Text("x", style=color)
