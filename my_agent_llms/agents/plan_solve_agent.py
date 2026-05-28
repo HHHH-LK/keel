@@ -19,8 +19,9 @@ class MyPlanSolveAgent(Agent):
                  config: Optional[Config] = None,
                  custom_prompt: Optional[str] = None,
                  max_retries: int = 2,
-                 enable_tool_calling: bool = False):
-        super().__init__(name, llm, system_prompt, config)
+                 enable_tool_calling: bool = False,
+                 **kwargs):
+        super().__init__(name, llm, system_prompt, config, **kwargs)
         self.tool_registry = tool_registry
         self.custom_prompt = custom_prompt
         self.max_retries = max_retries
@@ -30,9 +31,10 @@ class MyPlanSolveAgent(Agent):
         prompts = self.get_system_prompts()
 
         # 1) 规划阶段：让模型给出分步计划
-        plan_messages = self.memory.assemble_context(
+        plan_system = self._apply_honesty_contract(
             prompts["plan"].format(task=input_text)
         )
+        plan_messages = self.memory.assemble_context(plan_system)
         plan_messages.append({"role": "user", "content": input_text})
 
         plan = self.plan(plan_messages, **kwargs)
@@ -45,6 +47,7 @@ class MyPlanSolveAgent(Agent):
                     task=input_text, plan=plan, step_results="(无可执行步骤)"
                 )}
             ], **kwargs)
+            final = self._run_response_hooks(input_text, final, plan_messages)
             self._finalize_turn(input_text, final)
             return final
 
@@ -96,6 +99,7 @@ class MyPlanSolveAgent(Agent):
             )}
         ], **kwargs)
 
+        final_answer = self._run_response_hooks(input_text, final_answer, plan_messages)
         self._finalize_turn(input_text, final_answer)
         return final_answer
 

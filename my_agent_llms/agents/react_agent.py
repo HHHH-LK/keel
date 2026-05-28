@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Optional
 
@@ -6,6 +7,8 @@ from my_agent_llms.core.config import Config
 from my_agent_llms.core.llm import MyLLM
 from my_agent_llms.core.message import Message
 from my_agent_llms.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class MyReActAgent(Agent):
@@ -17,8 +20,9 @@ class MyReActAgent(Agent):
                  config: Optional[Config] = None,
                  max_steps: int = 5,
                  custom_prompt: Optional[str] = None,
-                 enable_tool_calling: bool = False):
-        super().__init__(name, llm, system_prompt, config)
+                 enable_tool_calling: bool = False,
+                 **kwargs):
+        super().__init__(name, llm, system_prompt, config, **kwargs)
         self.name = name
         self.llm = llm
         self.tool_registry = tool_registry
@@ -33,26 +37,26 @@ class MyReActAgent(Agent):
     def run(self, input_text: str, max_tool_iterations: int = 3, **kwargs) -> str:
         # 通过 MemoryManager 拼装 system + L2 摘要 + L1 历史
         system_prompt = self.get_system_prompt()
-        messages = self.memory.assemble_context(system_prompt)
+        messages = self.memory.assemble_context(system_prompt, query=input_text)
         messages.append({"role": "user", "content": input_text})
         if not self.enable_tool_calling:
             response = self.llm.invoke(messages)
+            response = self._run_response_hooks(input_text, response, messages)
             self._finalize_turn(input_text, response)
             return response
 
         return self.run_with_tool_use(self, input_text, messages, max_tool_iterations, **kwargs)
 
-    def get_system_prompt(self) -> str | None:
-        """构建增强的系统提示词，包含工具信息"""
+    def get_system_prompt(self) -> str:
+        """构建增强的系统提示词，包含工具信息 + 诚实契约"""
         base_prompt = self.system_prompt or "你是一个有用的AI助手。"
 
         if not self.enable_tool_calling or not self.tool_registry:
-            return base_prompt
+            return self._apply_honesty_contract(base_prompt)
 
-        # 获取工具描述
         tools_description = self.tool_registry.get_tools_description()
         if not tools_description or tools_description == "暂无可用工具":
-            return base_prompt
+            return self._apply_honesty_contract(base_prompt)
 
         tools_section = "\n\n## 可用工具\n"
         tools_section += "你可以使用以下工具来帮助回答问题:\n"
@@ -64,7 +68,7 @@ class MyReActAgent(Agent):
         tools_section += "例如:`[TOOL_CALL:search:Python编程]` 或 `[TOOL_CALL:memory:recall=用户信息]`\n\n"
         tools_section += "工具调用结果会自动插入到对话中，然后你可以基于结果继续回答。\n"
 
-        return base_prompt + tools_section
+        return self._apply_honesty_contract(base_prompt + tools_section)
 
     @staticmethod
     def run_with_tool_use(self, input_text, messages, max_tool_iterations, **kwargs) -> str:
@@ -104,8 +108,9 @@ class MyReActAgent(Agent):
         if current_iteration >= max_tool_iterations and not final_response:
             final_response = self.llm.invoke(messages, **kwargs)
 
+        final_response = self._run_response_hooks(input_text, final_response, messages)
         self._finalize_turn(input_text, final_response)
-        print(f"✅ {self.name} 响应完成")
+        logger.debug(f"{self.name} 响应完成")
 
         return final_response
 

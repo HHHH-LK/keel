@@ -1,6 +1,9 @@
+import logging
 from typing import Any, Callable, Optional, Dict
 
 from my_agent_llms.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
@@ -12,15 +15,15 @@ class ToolRegistry:
 
     def register_tool(self, tool: Tool):
         if tool.name in self._tools:
-            print(f"⚠️ 警告:工具 '{tool.name}' 已存在，将被覆盖。")
+            logger.debug(f"工具 '{tool.name}' 已存在，将被覆盖。")
         self._tools[tool.name] = tool
-        print(f"✅ 工具 '{tool.name}' 已注册。")
+        logger.debug(f"工具 '{tool.name}' 已注册。")
 
     def register_function(self, name: str, description: str, func: Callable[[str], str]):
         if name in self._functions:
-            print(f"⚠️ 警告:工具 '{name}' 已存在，将被覆盖。")
+            logger.debug(f"工具 '{name}' 已存在，将被覆盖。")
         self._functions[name] = {"description": description, "func": func}
-        print(f"✅ 工具 '{name}' 已注册。")
+        logger.debug(f"工具 '{name}' 已注册。")
 
     def unregister(self, name: str) -> bool:
         removed = False

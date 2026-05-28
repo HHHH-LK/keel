@@ -160,3 +160,7 @@ class SummaryMemory(MemoryTier):
 
     def current_summary(self) -> Optional[MemoryItem]:
         return self._summary_item
+
+    def clear(self) -> None:
+        self._summary_item = None
+        self._buffer.clear()

@@ -265,17 +265,35 @@ class MyLLM:
 
         if stream:
             collected_content = []
+            collected_reasoning = []
             for chunk in response:
                 if not chunk.choices:
                     continue
-                content = chunk.choices[0].delta.content or ""
+                delta = chunk.choices[0].delta
+                content = delta.content or ""
                 if content:
                     print(content, end="", flush=True)
                     collected_content.append(content)
+                # thinking 模型 (MiMo / Qwen3 / DeepSeek-R1) 单独的 reasoning 通道：
+                # 暂不流式打印，仅在 content 整段为空时兜底输出，避免双通道交错刷屏。
+                reasoning = getattr(delta, "reasoning_content", "") or ""
+                if reasoning:
+                    collected_reasoning.append(reasoning)
             print()
-            return "".join(collected_content)
+            if collected_content:
+                return "".join(collected_content)
+            if collected_reasoning:
+                fallback = "".join(collected_reasoning)
+                print(fallback)
+                return fallback
+            return ""
 
-        return response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        content = (msg.content or "").strip()
+        if content:
+            return content
+        reasoning = (getattr(msg, "reasoning_content", "") or "").strip()
+        return reasoning
 
     def _think_anthropic(
         self,
@@ -358,12 +376,22 @@ class MyLLM:
             if self.max_tokens is not None:
                 request_kwargs["max_tokens"] = self.max_tokens
             response = self.client.chat.completions.create(**request_kwargs)
+            yielded_any = False
+            reasoning_buf = []
             for chunk in response:
                 if not chunk.choices:
                     continue
-                content = chunk.choices[0].delta.content or ""
+                delta = chunk.choices[0].delta
+                content = delta.content or ""
                 if content:
+                    yielded_any = True
                     yield content
+                reasoning = getattr(delta, "reasoning_content", "") or ""
+                if reasoning:
+                    reasoning_buf.append(reasoning)
+            # content 通道整段为空时，把 reasoning 一次性吐出来兜底
+            if not yielded_any and reasoning_buf:
+                yield "".join(reasoning_buf)
             return
 
         # 非 OpenAI 兼容 provider 没有统一的流式接口，整体返回一次。

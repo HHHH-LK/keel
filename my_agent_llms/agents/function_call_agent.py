@@ -1,3 +1,4 @@
+
 """基于 OpenAI 原生 function calling 的 Agent。
 
 与 ReActAgent 的区别在于工具调用通道：ReAct 走文本协议
@@ -5,13 +6,23 @@
 的 tools / tool_calls 字段，由模型保证返回合法 JSON 参数，鲁棒性更强。
 """
 import json
-from typing import Any, Dict, List, Optional, Union
+import logging
+from types import SimpleNamespace
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from my_agent_llms.core.agent import Agent
 from my_agent_llms.core.config import Config
 from my_agent_llms.core.llm import MyLLM
 from my_agent_llms.core.message import Message
 from my_agent_llms.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+# 流式回调签名:
+# - on_text_chunk(text): 模型每吐一段可见 content 时调用一次
+# - on_tool_call(name, args_dict): 工具调用即将执行时调用一次
+TextChunkCallback = Callable[[str], None]
+ToolCallCallback = Callable[[str, Dict[str, Any]], None]
 
 
 class MyFunctionCallAgent(Agent):
@@ -23,30 +34,42 @@ class MyFunctionCallAgent(Agent):
                  tool_registry: ToolRegistry,
                  system_prompt: Optional[str] = None,
                  config: Optional[Config] = None,
-                 max_steps: int = 5):
-        super().__init__(name, llm, system_prompt, config)
+                 max_steps: int = 5,
+                 **kwargs):
+        super().__init__(name, llm, system_prompt, config, **kwargs)
         if llm.provider not in MyLLM.OPENAI_COMPATIBLE_PROVIDERS:
             raise ValueError(
                 f"FunctionCallAgent 仅支持 OpenAI 兼容 provider，当前为: {llm.provider}"
             )
         self.tool_registry = tool_registry
         self.max_steps = max_steps
+        self.last_tool_call_count = 0  # chat 层读取用作 meta
         self._install_memory_tools(self.tool_registry)
 
     def run(self,
             input_text: str,
             tool_choice: Union[str, dict] = "auto",
+            on_text_chunk: Optional[TextChunkCallback] = None,
+            on_tool_call: Optional[ToolCallCallback] = None,
             **kwargs) -> str:
+        """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。"""
+        system_prompt = self._apply_honesty_contract(self.system_prompt)
+        # query=input_text 让 memory 做 L0 query-aware 加权 + 被动 recall
         messages: List[Dict[str, Any]] = list(
-            self.memory.assemble_context(self.system_prompt)
+            self.memory.assemble_context(system_prompt, query=input_text)
         )
         messages.append({"role": "user", "content": input_text})
 
         tools = self._build_tool_schemas()
+        tool_call_count = 0
 
         final_response = ""
         for _ in range(self.max_steps):
-            response = self._invoke_with_tools(messages, tools, tool_choice, **kwargs)
+            response = self._invoke_with_tools(
+                messages, tools, tool_choice,
+                on_text_chunk=on_text_chunk,
+                **kwargs,
+            )
             message = response.choices[0].message
             tool_calls = getattr(message, "tool_calls", None)
 
@@ -74,6 +97,12 @@ class MyFunctionCallAgent(Agent):
                 tool_name = tc.function.name
                 args = self._parse_function_call_arguments(tc.function.arguments)
                 args = self._convert_parameter_types(tool_name, args)
+                if on_tool_call is not None:
+                    try:
+                        on_tool_call(tool_name, args)
+                    except Exception:
+                        logger.exception("on_tool_call 回调异常,忽略不影响主流程")
+                tool_call_count += 1
                 result = self.tool_registry.execute_tool(tool_name, args)
                 messages.append({
                     "role": "tool",
@@ -82,11 +111,31 @@ class MyFunctionCallAgent(Agent):
                 })
 
         if not final_response:
-            response = self._invoke_with_tools(messages, tools, "none", **kwargs)
+            response = self._invoke_with_tools(
+                messages, tools, "none",
+                on_text_chunk=on_text_chunk,
+                **kwargs,
+            )
             final_response = self._extract_message_content(response.choices[0].message)
 
+        if not final_response:
+            final_response = (
+                "(模型本轮未产生文本响应。可能是 max_tokens 在思考阶段就用尽了，"
+                "或本轮触发了模型的纯思考通道。可尝试加大 LLM_MAX_TOKENS、换非 thinking 模型，"
+                "或换个表述重试。)"
+            )
+            logger.warning("FunctionCallAgent: 主循环与 fallback 都未拿到文本响应")
+            if on_text_chunk is not None:
+                # 占位文本也得让用户看到（前面流式可能一字未出）
+                try:
+                    on_text_chunk(final_response)
+                except Exception:
+                    logger.exception("on_text_chunk 回调异常,忽略")
+
+        final_response = self._run_response_hooks(input_text, final_response, messages)
         self._finalize_turn(input_text, final_response)
-        print(f"✅ {self.name} 响应完成")
+        self.last_tool_call_count = tool_call_count
+        logger.debug(f"{self.name} 响应完成")
         return final_response
 
     def _build_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -96,6 +145,7 @@ class MyFunctionCallAgent(Agent):
                            messages: List[Dict[str, Any]],
                            tools: List[Dict[str, Any]],
                            tool_choice: Union[str, dict],
+                           on_text_chunk: Optional[TextChunkCallback] = None,
                            **kwargs):
         client = getattr(self.llm, "client", None)
         if client is None:
@@ -106,7 +156,7 @@ class MyFunctionCallAgent(Agent):
         if self.llm.max_tokens is not None:
             request_kwargs.setdefault("max_tokens", self.llm.max_tokens)
 
-        return client.chat.completions.create(
+        base_request: Dict[str, Any] = dict(
             model=self.llm.model,
             messages=messages,
             tools=tools,
@@ -114,9 +164,128 @@ class MyFunctionCallAgent(Agent):
             **request_kwargs,
         )
 
+        response = self._stream_chat_completion(client, base_request, on_text_chunk)
+
+        # 自救：撞 max_tokens 上限、content 又是空（thinking 模型把预算吃在
+        # reasoning 阶段最常见的失败形态）→ 把预算翻倍重试一次。
+        choice = response.choices[0]
+        message = choice.message
+        empty_content = not (getattr(message, "content", None) or "").strip()
+        no_tool_calls = not getattr(message, "tool_calls", None)
+        if choice.finish_reason == "length" and empty_content and no_tool_calls:
+            current_budget = request_kwargs.get("max_tokens") or self.llm.max_tokens or 8192
+            bumped_request = dict(base_request)
+            bumped_request["max_tokens"] = current_budget * 2
+            logger.warning(
+                "finish_reason=length 且响应为空，max_tokens %s→%s 重试",
+                current_budget, bumped_request["max_tokens"],
+            )
+            response = self._stream_chat_completion(client, bumped_request, on_text_chunk)
+
+        return response
+
+    @staticmethod
+    def _stream_chat_completion(
+        client,
+        base_request: Dict[str, Any],
+        on_text_chunk: Optional[TextChunkCallback],
+    ):
+        """开 stream=True 调 chat.completions, 累积出与非流式等价的 response 对象。
+
+        - 文本 content chunk → 实时回调 on_text_chunk 并累积
+        - reasoning_content chunk → 静默累积（content 为空时兜底）
+        - tool_calls chunk → 按 index 累加 arguments JSON 片段
+        - finish_reason 取最后一个非空值
+
+        返回的 SimpleNamespace 跟原生 ChatCompletion 同形:
+        response.choices[0].message.{content, tool_calls, reasoning_content}
+        response.choices[0].finish_reason
+        """
+        stream_request = dict(base_request)
+        stream_request["stream"] = True
+
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        # tool_calls 按 index 累积: {index: {id, name, arguments(str)}}
+        tool_acc: Dict[int, Dict[str, str]] = {}
+        finish_reason: Optional[str] = None
+
+        stream = client.chat.completions.create(**stream_request)
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if getattr(choice, "finish_reason", None):
+                finish_reason = choice.finish_reason
+
+            delta = choice.delta
+            content = getattr(delta, "content", None) or ""
+            if content:
+                content_parts.append(content)
+                if on_text_chunk is not None:
+                    try:
+                        on_text_chunk(content)
+                    except Exception:
+                        logger.exception("on_text_chunk 回调异常,忽略不影响流式累积")
+
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            if reasoning:
+                reasoning_parts.append(reasoning)
+
+            for tc_chunk in getattr(delta, "tool_calls", None) or []:
+                idx = getattr(tc_chunk, "index", 0) or 0
+                entry = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                tc_id = getattr(tc_chunk, "id", None)
+                if tc_id:
+                    entry["id"] = tc_id
+                fn = getattr(tc_chunk, "function", None)
+                if fn is not None:
+                    fn_name = getattr(fn, "name", None)
+                    if fn_name:
+                        entry["name"] = fn_name
+                    fn_args = getattr(fn, "arguments", None)
+                    if fn_args:
+                        entry["arguments"] += fn_args
+
+        # 组装等价于非流式 message 的对象
+        tool_calls_list = None
+        if tool_acc:
+            tool_calls_list = [
+                SimpleNamespace(
+                    id=tool_acc[i]["id"],
+                    type="function",
+                    function=SimpleNamespace(
+                        name=tool_acc[i]["name"],
+                        arguments=tool_acc[i]["arguments"],
+                    ),
+                )
+                for i in sorted(tool_acc)
+            ]
+
+        full_content = "".join(content_parts)
+        full_reasoning = "".join(reasoning_parts)
+        message = SimpleNamespace(
+            # 与 OpenAI SDK 对齐: 空字符串保留为 None 区分"没生成"vs"生成了空串"
+            content=full_content if full_content else None,
+            tool_calls=tool_calls_list,
+            reasoning_content=full_reasoning if full_reasoning else None,
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason=finish_reason)]
+        )
+
     @staticmethod
     def _extract_message_content(message) -> str:
-        return message.content or ""
+        content = (message.content or "").strip()
+        if content:
+            return content
+        # thinking 模型 (MiMo / Qwen3-thinking / DeepSeek-R1 等) 会把答案
+        # 放在 reasoning_content，content 可能为空——降级取它，避免静默丢响应。
+        reasoning = (getattr(message, "reasoning_content", "") or "").strip()
+        if reasoning:
+            logger.warning("content 为空，降级使用 reasoning_content（可能是 max_tokens 不足或模型走了纯思考通道）")
+            return reasoning
+        return ""
 
     @staticmethod
     def _parse_function_call_arguments(raw: str) -> Dict[str, Any]:

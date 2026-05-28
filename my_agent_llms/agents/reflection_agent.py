@@ -16,8 +16,9 @@ class MyReflectionAgent(Agent):
                  config: Optional[Config] = None,
                  max_steps: int = 5,
                  custom_prompt: Optional[str] = None,
-                 enable_tool_calling: bool = False):
-        super().__init__(name, llm, system_prompt, config)
+                 enable_tool_calling: bool = False,
+                 **kwargs):
+        super().__init__(name, llm, system_prompt, config, **kwargs)
         self.tool_registry = tool_registry
         self.custom_prompt = custom_prompt
         self.max_steps = max_steps
@@ -26,9 +27,10 @@ class MyReflectionAgent(Agent):
     def run(self, input_text: str, **kwargs) -> str:
         system_prompts = self.get_system_prompts()
 
-        messages = self.memory.assemble_context(
+        initial_prompt = self._apply_honesty_contract(
             system_prompts["initial"].format(task=input_text)
         )
+        messages = self.memory.assemble_context(initial_prompt)
         messages.append({"role": "user", "content": input_text})
 
         response = self.llm.invoke(messages, **kwargs)
@@ -58,6 +60,7 @@ class MyReflectionAgent(Agent):
                 }
             ], **kwargs)
 
+        response = self._run_response_hooks(input_text, response, messages)
         self._finalize_turn(input_text, response)
         return response
 

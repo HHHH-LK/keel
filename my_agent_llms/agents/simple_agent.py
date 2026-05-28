@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Iterator
 
 from my_agent_llms.core.agent import Agent
@@ -7,6 +8,8 @@ import re
 
 from my_agent_llms.core.message import Message
 from my_agent_llms.tools import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class MySimpleAgent(Agent):
@@ -18,22 +21,24 @@ class MySimpleAgent(Agent):
             system_prompt: Optional[str] = None,
             config: Optional[Config] = None,
             tool_registry: Optional[ToolRegistry] = None,
-            enable_tool_calling: bool = True
+            enable_tool_calling: bool = True,
+            **kwargs,
     ):
-        super().__init__(name, llm, system_prompt, config)
+        super().__init__(name, llm, system_prompt, config, **kwargs)
         self.tool_registry = tool_registry
         self.enable_tool_calling = enable_tool_calling and tool_registry is not None
         if self.enable_tool_calling:
             self._install_memory_tools(self.tool_registry)
-        print(f"✅ {name} 初始化完成，工具调用: {'启用' if self.enable_tool_calling else '禁用'}")
+        logger.debug(f"{name} 初始化完成，工具调用: {'启用' if self.enable_tool_calling else '禁用'}")
 
     def run(self, input_text: str, max_tool_iterations: int = 3, **kwargs) -> str:
         """
         重写的运行方法 - 实现简单对话逻辑，支持可选工具调用
         """
-        print(f"🤖 {self.name} 正在处理: {input_text}")
+        logger.debug(f"{self.name} 正在处理: {input_text}")
 
         # 通过 MemoryManager 拼装 system + L2 摘要 + L1 历史
+
         enhanced_system_prompt = self._get_enhanced_system_prompt()
         messages = self.memory.assemble_context(enhanced_system_prompt)
         messages.append({"role": "user", "content": input_text})
@@ -41,24 +46,25 @@ class MySimpleAgent(Agent):
         # 如果没有启用工具调用，使用简单对话逻辑
         if not self.enable_tool_calling:
             response = self.llm.invoke(messages, **kwargs)
+            response = self._run_response_hooks(input_text, response, messages)
             self._finalize_turn(input_text, response)
-            print(f"✅ {self.name} 响应完成")
+            logger.debug(f"{self.name} 响应完成")
             return response
 
         # 支持多轮工具调用的逻辑
         return self._run_with_tools(messages, input_text, max_tool_iterations, **kwargs)
 
     def _get_enhanced_system_prompt(self) -> str:
-        """构建增强的系统提示词，包含工具信息"""
+        """构建增强的系统提示词，包含工具信息 + 诚实契约"""
         base_prompt = self.system_prompt or "你是一个有用的AI助手。"
 
         if not self.enable_tool_calling or not self.tool_registry:
-            return base_prompt
+            return self._apply_honesty_contract(base_prompt)
 
         # 获取工具描述
         tools_description = self.tool_registry.get_tools_description()
         if not tools_description or tools_description == "暂无可用工具":
-            return base_prompt
+            return self._apply_honesty_contract(base_prompt)
 
         tools_section = "\n\n## 可用工具\n"
         tools_section += "你可以使用以下工具来帮助回答问题:\n"
@@ -70,7 +76,7 @@ class MySimpleAgent(Agent):
         tools_section += "例如:`[TOOL_CALL:search:Python编程]` 或 `[TOOL_CALL:memory:recall=用户信息]`\n\n"
         tools_section += "工具调用结果会自动插入到对话中，然后你可以基于结果继续回答。\n"
 
-        return base_prompt + tools_section
+        return self._apply_honesty_contract(base_prompt + tools_section)
 
     def _run_with_tools(self, messages: list, input_text: str, max_tool_iterations: int, **kwargs) -> str:
         """支持工具调用的运行逻辑"""
@@ -115,8 +121,9 @@ class MySimpleAgent(Agent):
         if current_iteration >= max_tool_iterations and not final_response:
             final_response = self.llm.invoke(messages, **kwargs)
 
+        final_response = self._run_response_hooks(input_text, final_response, messages)
         self._finalize_turn(input_text, final_response)
-        print(f"✅ {self.name} 响应完成")
+        logger.debug(f"{self.name} 响应完成")
 
         return final_response
 
@@ -207,7 +214,7 @@ class MySimpleAgent(Agent):
         print()  # 换行
 
         self._finalize_turn(input_text, full_response)
-        print(f"✅ {self.name} 流式响应完成")
+        logger.debug(f"{self.name} 流式响应完成")
 
     def add_tool(self, tool) -> None:
         """添加工具到Agent（便利方法）"""
@@ -217,7 +224,7 @@ class MySimpleAgent(Agent):
             self.enable_tool_calling = True
 
         self.tool_registry.register_tool(tool)
-        print(f"🔧 工具 '{tool.name}' 已添加")
+        logger.debug(f"工具 '{tool.name}' 已添加")
 
     def has_tools(self) -> bool:
         """检查是否有可用工具"""

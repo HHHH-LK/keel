@@ -135,6 +135,20 @@ def is_ready(cfg: Dict) -> bool:
     return bool(cfg.get("api_key") and cfg.get("model") and cfg.get("provider"))
 
 
+def _preview_tool_args(args: Dict, *, max_total: int = 60, max_value: int = 30) -> str:
+    """格式化工具参数给 UI 提示用,过长的值截断。"""
+    items = []
+    for k, v in args.items():
+        v_repr = repr(v)
+        if len(v_repr) > max_value:
+            v_repr = v_repr[:max_value - 3] + "..."
+        items.append(f"{k}={v_repr}")
+    full = ", ".join(items)
+    if len(full) > max_total:
+        full = full[:max_total - 3] + "..."
+    return full
+
+
 # ────────────────────────────────────────────────────────────
 # Agent 装配 (失败时返回 None)
 # ────────────────────────────────────────────────────────────
@@ -150,6 +164,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
             model=cfg["model"],
             api_key=cfg["api_key"],
             base_url=cfg.get("base_url"),
+            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "8192")),
         )
     except Exception as exc:
         help_view.print_error(console, f"LLM 初始化失败: {exc}")
@@ -178,6 +193,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     from my_agent_llms.tools.builtin.write_file import WriteFile
     from my_agent_llms.tools.builtin.list_dir import ListDir
     from my_agent_llms.tools.builtin.attach_file import AttachFile
+    from my_agent_llms.tools.builtin.attach_dir import AttachDir
     from my_agent_llms.tools.builtin.export_file import ExportFile
 
     try:
@@ -195,6 +211,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     registry.register_tool(WriteFile(ws, pe_store))
     registry.register_tool(ListDir(ws))
     registry.register_tool(AttachFile(ws))
+    registry.register_tool(AttachDir(ws))
     registry.register_tool(ExportFile(ws, pe_store))
 
     try:
@@ -207,16 +224,19 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 "并在用户的偏好/事实变化时主动更新记忆。"
                 "用自然、温暖但不啰嗦的语气。\n\n"
                 "## 文件操作协议\n"
-                "你拥有 sandbox 文件工具。流程必须严格遵守:\n"
-                "1. 用户提到任何外部路径(如 ./report.md, /Users/.../foo.md),先用 AttachFile 把文件复制进 sandbox\n"
-                "2. 在 sandbox 内用 ReadFile / EditFile / WriteFile / ListDir 操作\n"
-                "3. EditFile 和 WriteFile 是两步: 第一次调用返回 [待确认] pending_id 和 diff; "
-                "   等用户在对话里明确说'确认'后,再用 pending_id + action=apply 调一次落盘\n"
-                "4. 用户希望把修改写回原位置时,用 ExportFile(同样两步确认 + diff vs 原文件)\n"
-                "5. sandbox 内新建的文件,ExportFile 时必须显式给 dest_path\n"
+                "你拥有 sandbox 文件工具。规则:\n"
+                "1. 用户提到外部路径:\n"
+                "   - 是文件 → AttachFile 拉进 sandbox\n"
+                "   - 是目录 → AttachDir 整个目录递归拉进 sandbox\n"
+                "     (自动跳过 .git/.venv/node_modules/__pycache__/二进制等,"
+                "      返回值会附带文件清单,无需再额外 ListDir)\n"
+                "2. sandbox 内用 ReadFile / EditFile / WriteFile / ListDir 操作\n"
+                "3. EditFile / WriteFile 是两步: 第一次调用返回 [待确认] pending_id + diff;"
+                "   用户明确说'确认'后,再用 pending_id + action=apply 落盘\n"
+                "4. 写回原位置用 ExportFile (同样两步 + diff vs 原文件)。sandbox 内新建的文件 ExportFile 时必须给 dest_path\n"
             ),
             memory_config=memory_config,
-            max_steps=5,
+            max_steps=50,
         )
     except Exception as exc:
         help_view.print_error(console, f"Agent 构造失败: {exc}")
@@ -771,21 +791,55 @@ class ChatCLI:
             return
 
         start = time.monotonic()
+        renderer = chat_view.StreamingAgentRenderer(console)
+
+        # 状态指示器:只在"还没拿到第一段输出"期间显示,首个 chunk/tool 一到就收
+        status = console.status(
+            f"[{theme.AGENT}]伙伴[/] [{theme.DIM}]·  thinking…[/]",
+            spinner="dots",
+            spinner_style=theme.AGENT,
+        )
+        status.start()
+        status_stopped = {"v": False}
+
+        def _stop_status_once() -> None:
+            if not status_stopped["v"]:
+                status_stopped["v"] = True
+                status.stop()
+
+        def _on_chunk(text: str) -> None:
+            _stop_status_once()
+            renderer.text_chunk(text)
+
+        def _on_tool(name: str, args: Dict) -> None:
+            _stop_status_once()
+            renderer.tool_notice(name, _preview_tool_args(args))
+
         try:
-            with console.status(
-                f"[{theme.AGENT}]伙伴[/] [{theme.DIM}]·  thinking…[/]",
-                spinner="dots",
-                spinner_style=theme.AGENT,
-            ):
-                response = self.agent.run(user_input)
+            response = self.agent.run(
+                user_input,
+                on_text_chunk=_on_chunk,
+                on_tool_call=_on_tool,
+            )
         except Exception as exc:
+            _stop_status_once()
+            if renderer.has_output:
+                renderer.close()  # 先收尾再吐错,UI 不串行
             chat_view.render_agent_error(console, str(exc))
             return
+        finally:
+            _stop_status_once()
 
         elapsed = time.monotonic() - start
-        # TODO: surface real tool-call count once agent exposes it; 0 hides the indicator
-        chat_view.render_agent(console, response,
-                               tools_used=0, elapsed_seconds=elapsed)
+        tools_used = getattr(self.agent, "last_tool_call_count", 0)
+
+        if renderer.has_output:
+            renderer.close(tools_used=tools_used, elapsed_seconds=elapsed)
+        else:
+            # 流式期间一字未出 (比如 _extract_message_content 走 reasoning 兜底
+            # 返回字符串,但 stream 阶段 content 通道全空) → 回退到全文 markdown 渲染
+            chat_view.render_agent(console, response,
+                                   tools_used=tools_used, elapsed_seconds=elapsed)
         self.turn += 1
 
     def run(self) -> None:

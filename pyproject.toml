@@ -10,7 +10,9 @@ dependencies = [
     "load-dotenv>=0.1.0",
     "openai>=2.32.0",
     "optional>=0.0.1",
+    "prompt-toolkit>=3.0.52",
     "pydantic>=2.13.2",
     "python-dotenv>=1.2.2",
+    "rich>=15.0.0",
     "serpapi>=1.0.2",
 ]

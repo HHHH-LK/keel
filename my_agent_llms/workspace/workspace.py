@@ -9,14 +9,30 @@
 from __future__ import annotations
 
 import datetime as _dt
+import fnmatch
 import json
 import secrets
 import shutil
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 DEFAULT_DENY_DIRS = frozenset({".git", ".env", "node_modules", "__pycache__", ".venv"})
 DEFAULT_DENY_SUFFIXES = frozenset({".pem", ".key"})
+
+# attach_dir 专属的额外忽略规则（hard-deny 之外的"通常无用"项），
+# 跟 DEFAULT_DENY_* 区分：deny 是安全/隔离边界，这里只是节省带宽。
+ATTACH_DIR_EXTRA_IGNORE_DIRS = frozenset({
+    "dist", "build", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".idea", ".vscode", ".claude", ".omx", "target", "out", "runs",
+})
+ATTACH_DIR_EXTRA_IGNORE_GLOBS = (
+    "*.lock", "*.pyc", "*.pyo", "*.so", "*.dylib", "*.dll", "*.class",
+    "*.zip", "*.tar", "*.gz", "*.tgz", "*.bz2", "*.7z", "*.rar",
+    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.ico", "*.svg",
+    "*.pdf", "*.mp4", "*.mp3", "*.wav", "*.webm",
+    "*.exe", "*.bin", "*.o", "*.a",
+    ".DS_Store", "Thumbs.db",
+)
 
 
 class WorkspaceViolation(Exception):
@@ -159,3 +175,91 @@ class Workspace:
             return None
         src = self.manifest().get(rel)
         return Path(src) if src else None
+
+    def attach_dir(
+        self,
+        source_path: str | Path,
+        *,
+        max_file_bytes: int = 1 * 1024 * 1024,
+        max_total_bytes: int = 50 * 1024 * 1024,
+        extra_ignore_globs: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """递归把外部目录拷进 sandbox。返回统计 dict。
+
+        规则:
+        - 单文件 > max_file_bytes 跳过
+        - 累计 > max_total_bytes 立即停止 (truncated=True)
+        - hard deny (deny_dirs / deny_suffixes) 不可绕过,与单文件 attach 对称
+        - extra ignore (build/cache/二进制) 默认开启,可加 extra_ignore_globs 追加
+        - symlink 一律跳过 (避免指向 sandbox 外的逃逸)
+        """
+        src = Path(source_path).expanduser()
+        if not src.exists():
+            raise FileNotFoundError(f"源目录不存在: {src}")
+        if not src.is_dir():
+            raise NotADirectoryError(f"源不是目录: {src}")
+
+        src_resolved = src.resolve(strict=True)
+        for part in src_resolved.parts:
+            if part in self._deny_dirs:
+                raise WorkspaceViolation(f"源目录命中黑名单: {src_resolved}")
+
+        dest_root = self.root / src_resolved.name
+        if dest_root.exists():
+            raise FileExistsError(f"sandbox 已有同名目录: {self.relative(dest_root)}")
+        dest_root.mkdir()
+
+        ignore_globs = list(ATTACH_DIR_EXTRA_IGNORE_GLOBS) + list(extra_ignore_globs)
+        ignore_dirs = self._deny_dirs | ATTACH_DIR_EXTRA_IGNORE_DIRS
+
+        manifest = self.manifest()
+        copied: list[str] = []
+        skipped_too_large: list[str] = []
+        skipped_ignored = 0
+        total_bytes = 0
+        truncated = False
+
+        for src_file in sorted(src_resolved.rglob("*")):
+            if src_file.is_symlink() or not src_file.is_file():
+                continue
+
+            rel_path = src_file.relative_to(src_resolved)
+            rel_parent_parts = rel_path.parts[:-1]
+
+            if any(p in ignore_dirs for p in rel_parent_parts):
+                skipped_ignored += 1
+                continue
+            if any(fnmatch.fnmatch(src_file.name, g) for g in ignore_globs):
+                skipped_ignored += 1
+                continue
+            if src_file.suffix in self._deny_suffixes:
+                skipped_ignored += 1
+                continue
+
+            size = src_file.stat().st_size
+            if size > max_file_bytes:
+                skipped_too_large.append(f"{rel_path} ({size // 1024}KB)")
+                continue
+            if total_bytes + size > max_total_bytes:
+                truncated = True
+                break
+
+            dst_file = dest_root / rel_path
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_file)
+            manifest[self.relative(dst_file)] = str(src_file)
+            copied.append(str(rel_path))
+            total_bytes += size
+
+        self._write_manifest(manifest)
+
+        return {
+            "sandbox_dir": self.relative(dest_root),
+            "source": str(src_resolved),
+            "copied_count": len(copied),
+            "copied_files": copied,
+            "skipped_too_large": skipped_too_large,
+            "skipped_ignored_count": skipped_ignored,
+            "total_bytes": total_bytes,
+            "truncated": truncated,
+        }
