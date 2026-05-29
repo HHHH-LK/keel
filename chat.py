@@ -837,6 +837,9 @@ class ChatCLI:
             _stop_status()
             renderer_slot["current"].tool_notice(name, _preview_tool_args(args))
 
+        # 审批通过的 preview (unified diff) 暂存,等同名工具结果回来时一起渲染
+        approved_diff_slot: Dict[str, Optional[str]] = {"name": None, "preview": None}
+
         def _on_permission_request(name: str, args: Dict, preview: str) -> bool:
             _stop_status()
             cur = renderer_slot["current"]
@@ -849,7 +852,11 @@ class ChatCLI:
                 ok = False
             # 重置 renderer 让后续 chunk 进新 region
             renderer_slot["current"] = chat_view.StreamingAgentRenderer(console)
-            if not ok:
+            if ok:
+                # 暂存 diff,等 on_tool_result 来时配对渲染成 Claude Code Update 风格
+                approved_diff_slot["name"] = name
+                approved_diff_slot["preview"] = preview
+            else:
                 # 拒绝时,工具不会跑,on_tool_result 也不会被调,
                 # 在聊天流里补一条红色 ⏺ 让拒绝也是一个可见的 step
                 renderer_slot["current"].tool_result(
@@ -861,10 +868,19 @@ class ChatCLI:
             return ok
 
         def _on_tool_result(name: str, result: str) -> None:
-            # 工具刚跑完,立刻把结果首行 echo 到 renderer,
-            # 不用等模型再 invoke 一次"复述"一遍
+            # 工具刚跑完,立刻把结果落到 renderer,不用等模型再 invoke 一次"复述"
             _stop_status()
-            renderer_slot["current"].tool_result(result)
+            stash_name = approved_diff_slot["name"]
+            stash_preview = approved_diff_slot["preview"]
+            # 同名 + 执行成功 (✅ 开头) + 有暂存 diff → Claude Code Update 风格渲染
+            if (stash_name == name and stash_preview
+                    and result.lstrip().startswith("✅")):
+                renderer_slot["current"].tool_diff_result(result, stash_preview)
+            else:
+                renderer_slot["current"].tool_result(result)
+            # 不管走哪条路,都把暂存清掉,免得下次工具误用
+            approved_diff_slot["name"] = None
+            approved_diff_slot["preview"] = None
             # 工具结果出完,接下来还得等模型再说点啥,把 spinner 再转起来
             _restart_status()
 

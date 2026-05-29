@@ -10,8 +10,9 @@ split by line, and rebuild via Text.from_ansi which preserves styles.
 from __future__ import annotations
 
 import io
+import re
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -92,6 +93,98 @@ def _continuation_lines(text: str, color: str) -> Text:
         else:
             out.append("\n     ")
         out.append(line, style=color if i == 0 else "")
+    return out
+
+
+# unified diff hunk 头:@@ -OLD_START[,OLD_COUNT] +NEW_START[,NEW_COUNT] @@
+_DIFF_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _parse_diff_for_display(diff_text: str) -> Tuple[int, int, List[Tuple[str, str, str]]]:
+    """把 unified diff 解析成 (added, removed, lines)。
+
+    lines: 每个元素 (line_num, kind, content)
+      kind: '+' 新增 / '-' 删除 / ' ' 上下文
+      line_num: 新文件里的行号(- 行用旧文件行号);空字符串 = 无行号
+    """
+    added = 0
+    removed = 0
+    out: List[Tuple[str, str, str]] = []
+    new_line = 0
+    old_line = 0
+    for raw in diff_text.split("\n"):
+        if not raw:
+            continue
+        if raw.startswith("--- ") or raw.startswith("+++ "):
+            continue  # 跳过 file headers
+        m = _DIFF_HUNK_RE.match(raw)
+        if m:
+            old_line = int(m.group(1))
+            new_line = int(m.group(2))
+            continue
+        prefix = raw[0]
+        content = raw[1:]
+        if prefix == "+":
+            added += 1
+            out.append((str(new_line), "+", content))
+            new_line += 1
+        elif prefix == "-":
+            removed += 1
+            out.append((str(old_line), "-", content))
+            old_line += 1
+        elif prefix == " ":
+            out.append((str(new_line), " ", content))
+            new_line += 1
+            old_line += 1
+        # 其它(\, no newline at end of file 等)忽略
+    return added, removed, out
+
+
+def _diff_summary(added: int, removed: int) -> str:
+    """生成 "Added N lines" / "Removed N lines" / "Added N, removed M lines"。"""
+    if added and removed:
+        return f"Added {added} lines, removed {removed} lines"
+    if added:
+        return f"Added {added} lines"
+    if removed:
+        return f"Removed {removed} lines"
+    return "No changes"
+
+
+def _render_tool_diff(summary: str, lines: List[Tuple[str, str, str]],
+                      truncated: int = 0) -> Text:
+    """渲染 '⎿  summary' + 缩进的行号化 diff,跟 Claude Code Update 一致。
+
+    格式:
+      ⎿  ✅ 已修改 foo.py  ·  Added 13 lines
+          82      return theme.DIM
+          83
+          85 +def _continuation_lines(text, color):
+          ...
+    """
+    out = Text()
+    # 第一行:⎿  summary (绿色,因为这是个"成功完成"信号)
+    out.append("  ⎿  ", style=theme.OK)
+    out.append(summary, style=theme.OK)
+    # 行号宽度对齐
+    width = max((len(ln) for ln, _, _ in lines), default=4)
+    for line_num, kind, content in lines:
+        out.append("\n     ")
+        # 行号 (右对齐, DIM)
+        out.append(f"{line_num:>{width}} ", style=theme.DIM)
+        # diff 前缀 + 内容,颜色看 kind
+        if kind == "+":
+            out.append("+", style=theme.OK)
+            out.append(content, style=theme.OK)
+        elif kind == "-":
+            out.append("-", style=theme.ERR)
+            out.append(content, style=theme.ERR)
+        else:
+            out.append(" ")
+            out.append(content, style=theme.DIM)
+    if truncated:
+        out.append("\n     ")
+        out.append(f"… ({truncated} more lines)", style=theme.DIM)
     return out
 
 
@@ -205,6 +298,14 @@ class StreamingAgentRenderer:
                 text_line = seg[1]
                 color = _result_dot_color(text_line)
                 renderables.append(_continuation_lines(text_line, color))
+            elif kind == "tool_diff":
+                # tool_diff = '⎿  summary' + 缩进的行号化 diff (Claude Code Update 风格)
+                summary = seg[1]
+                diff_lines = seg[2]
+                truncated = seg[3] if len(seg) > 3 else 0
+                renderables.append(
+                    _render_tool_diff(summary, diff_lines, truncated)
+                )
 
         if not renderables:
             return Text("")
@@ -244,6 +345,29 @@ class StreamingAgentRenderer:
     def tool_notice(self, name: str, args_preview: str = "") -> None:
         self._ensure_started()
         self._segments.append(("tool", name, args_preview))
+        if self._live is not None:
+            self._live.update(self._render_body(markdown=False))
+
+    def tool_diff_result(self, summary_status: str, diff_text: str, *,
+                         max_lines: int = 30) -> None:
+        """工具跑完且我们手上有 unified diff —— 跟 Claude Code 的 Update 一样,
+        渲染成 '⎿  summary' + 缩进的行号化 diff(+ 绿 / - 红 / 上下文 DIM)。
+
+        summary_status 是工具返回的状态字符串(✅ 已修改 foo.py),会拼到摘要前面。
+        """
+        added, removed, lines = _parse_diff_for_display(diff_text)
+        if not lines:
+            # diff 解析没拿到内容(例如 "(无文本差异)") → 走普通 tool_result
+            self.tool_result(summary_status)
+            return
+        # 行数兜底截
+        truncated = 0
+        if len(lines) > max_lines:
+            truncated = len(lines) - max_lines
+            lines = lines[:max_lines]
+        summary = f"{summary_status}  ·  {_diff_summary(added, removed)}"
+        self._ensure_started()
+        self._segments.append(("tool_diff", summary, lines, truncated))
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))
 
