@@ -867,7 +867,7 @@ class ChatCLI:
             _restart_status()
             return ok
 
-        def _on_tool_result(name: str, result: str) -> None:
+        def _on_tool_result(name: str, result: str, elapsed: float) -> None:
             # 工具刚跑完,立刻把结果落到 renderer,不用等模型再 invoke 一次"复述"
             _stop_status()
             stash_name = approved_diff_slot["name"]
@@ -875,14 +875,24 @@ class ChatCLI:
             # 同名 + 执行成功 (✅ 开头) + 有暂存 diff → Claude Code Update 风格渲染
             if (stash_name == name and stash_preview
                     and result.lstrip().startswith("✅")):
-                renderer_slot["current"].tool_diff_result(result, stash_preview)
+                renderer_slot["current"].tool_diff_result(
+                    result, stash_preview, elapsed_sec=elapsed)
             else:
-                renderer_slot["current"].tool_result(result)
+                renderer_slot["current"].tool_result(result, elapsed_sec=elapsed)
             # 不管走哪条路,都把暂存清掉,免得下次工具误用
             approved_diff_slot["name"] = None
             approved_diff_slot["preview"] = None
             # 工具结果出完,接下来还得等模型再说点啥,把 spinner 再转起来
             _restart_status()
+
+        # 累计每次 LLM invoke 的 token 用量,在 close 时打总和
+        token_totals = {"in": 0, "out": 0}
+
+        def _on_llm_done(elapsed: float, pt, ct) -> None:
+            if pt:
+                token_totals["in"] += pt
+            if ct:
+                token_totals["out"] += ct
 
         try:
             response = self.agent.run(
@@ -891,6 +901,7 @@ class ChatCLI:
                 on_tool_call=_on_tool,
                 on_permission_request=_on_permission_request,
                 on_tool_result=_on_tool_result,
+                on_llm_done=_on_llm_done,
             )
         except Exception as exc:
             _stop_status()
@@ -907,7 +918,12 @@ class ChatCLI:
 
         final_renderer = renderer_slot["current"]
         if final_renderer.has_output:
-            final_renderer.close(tools_used=tools_used, elapsed_seconds=elapsed)
+            final_renderer.close(
+                tools_used=tools_used,
+                elapsed_seconds=elapsed,
+                tokens_in=token_totals["in"],
+                tokens_out=token_totals["out"],
+            )
         else:
             # 流式期间一字未出 (比如 _extract_message_content 走 reasoning 兜底
             # 返回字符串,但 stream 阶段 content 通道全空) → 回退到全文 markdown 渲染

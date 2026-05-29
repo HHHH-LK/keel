@@ -7,6 +7,7 @@
 """
 import json
 import logging
+import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -22,11 +23,14 @@ logger = logging.getLogger(__name__)
 # - on_text_chunk(text): 模型每吐一段可见 content 时调用一次
 # - on_tool_call(name, args_dict): 工具调用即将执行时调用一次
 # - on_permission_request(name, args_dict, preview) → bool: 需审批工具执行前询问用户
-# - on_tool_result(name, result_str): 工具执行完成后立即调用一次,让 UI 不用等模型再说一遍
+# - on_tool_result(name, result_str, elapsed_sec): 工具执行完成后立即调用,带耗时
+# - on_llm_done(elapsed_sec, prompt_tokens, completion_tokens): 每次 LLM invoke
+#   结束后调用,带耗时 + token 用量 (provider 不支持 usage 时 tokens 为 None)
 TextChunkCallback = Callable[[str], None]
 ToolCallCallback = Callable[[str, Dict[str, Any]], None]
 PermissionCallback = Callable[[str, Dict[str, Any], str], bool]
-ToolResultCallback = Callable[[str, str], None]
+ToolResultCallback = Callable[[str, str, float], None]
+LLMDoneCallback = Callable[[float, Optional[int], Optional[int]], None]
 
 
 class MyFunctionCallAgent(Agent):
@@ -57,6 +61,7 @@ class MyFunctionCallAgent(Agent):
             on_tool_call: Optional[ToolCallCallback] = None,
             on_permission_request: Optional[PermissionCallback] = None,
             on_tool_result: Optional[ToolResultCallback] = None,
+            on_llm_done: Optional[LLMDoneCallback] = None,
             **kwargs) -> str:
         """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。"""
         system_prompt = self._apply_honesty_contract(self.system_prompt)
@@ -71,11 +76,23 @@ class MyFunctionCallAgent(Agent):
 
         final_response = ""
         for _ in range(self.max_steps):
+            t_llm = time.monotonic()
             response = self._invoke_with_tools(
                 messages, tools, tool_choice,
                 on_text_chunk=on_text_chunk,
                 **kwargs,
             )
+            llm_elapsed = time.monotonic() - t_llm
+            # 把 usage (provider 可能没给) 拿出来,通过回调上报
+            usage = getattr(response, "usage", None)
+            pt = getattr(usage, "prompt_tokens", None) if usage else None
+            ct = getattr(usage, "completion_tokens", None) if usage else None
+            if on_llm_done is not None:
+                try:
+                    on_llm_done(llm_elapsed, pt, ct)
+                except Exception:
+                    logger.exception("on_llm_done 回调异常,忽略")
+
             message = response.choices[0].message
             tool_calls = getattr(message, "tool_calls", None)
 
@@ -134,7 +151,9 @@ class MyFunctionCallAgent(Agent):
                         continue
 
                 tool_call_count += 1
+                t_tool = time.monotonic()
                 result = self.tool_registry.execute_tool(tool_name, args)
+                tool_elapsed = time.monotonic() - t_tool
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -142,16 +161,26 @@ class MyFunctionCallAgent(Agent):
                 })
                 if on_tool_result is not None:
                     try:
-                        on_tool_result(tool_name, str(result))
+                        on_tool_result(tool_name, str(result), tool_elapsed)
                     except Exception:
                         logger.exception("on_tool_result 回调异常,忽略不影响主流程")
 
         if not final_response:
+            t_llm = time.monotonic()
             response = self._invoke_with_tools(
                 messages, tools, "none",
                 on_text_chunk=on_text_chunk,
                 **kwargs,
             )
+            llm_elapsed = time.monotonic() - t_llm
+            usage = getattr(response, "usage", None)
+            pt = getattr(usage, "prompt_tokens", None) if usage else None
+            ct = getattr(usage, "completion_tokens", None) if usage else None
+            if on_llm_done is not None:
+                try:
+                    on_llm_done(llm_elapsed, pt, ct)
+                except Exception:
+                    logger.exception("on_llm_done 回调异常,忽略")
             final_response = self._extract_message_content(response.choices[0].message)
 
         if not final_response:
@@ -239,15 +268,22 @@ class MyFunctionCallAgent(Agent):
         """
         stream_request = dict(base_request)
         stream_request["stream"] = True
+        # 让兼容的 provider (OpenAI/DeepSeek/MiMo/...) 在最后一帧带上 usage
+        stream_request["stream_options"] = {"include_usage": True}
 
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
         # tool_calls 按 index 累积: {index: {id, name, arguments(str)}}
         tool_acc: Dict[int, Dict[str, str]] = {}
         finish_reason: Optional[str] = None
+        usage = None  # 最后一帧的 usage,部分 provider 可能不返回
 
         stream = client.chat.completions.create(**stream_request)
         for chunk in stream:
+            # usage 帧 (有的 provider 把它放在 choices 为空的最后一帧)
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = chunk_usage
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
@@ -307,7 +343,8 @@ class MyFunctionCallAgent(Agent):
             reasoning_content=full_reasoning if full_reasoning else None,
         )
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=message, finish_reason=finish_reason)]
+            choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+            usage=usage,
         )
 
     @staticmethod

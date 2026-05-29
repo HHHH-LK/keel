@@ -151,6 +151,17 @@ def _diff_summary(added: int, removed: int) -> str:
     return "No changes"
 
 
+def _fmt_elapsed(seconds: float) -> str:
+    """美化耗时:<1s → 'XXXms';<60s → 'X.Xs';>=60s → 'XmYs'。"""
+    if seconds < 1.0:
+        return f"{int(seconds * 1000)}ms"
+    if seconds < 60.0:
+        return f"{seconds:.1f}s"
+    m = int(seconds // 60)
+    s = seconds - m * 60
+    return f"{m}m{s:.0f}s"
+
+
 def _render_tool_diff(summary: str, lines: List[Tuple[str, str, str]],
                       truncated: int = 0) -> Text:
     """渲染 '⎿  summary' + 缩进的行号化 diff,跟 Claude Code Update 一致。
@@ -340,29 +351,27 @@ class StreamingAgentRenderer:
             self._live.update(self._render_body(markdown=False))
 
     def tool_diff_result(self, summary_status: str, diff_text: str, *,
+                         elapsed_sec: Optional[float] = None,
                          max_lines: int = 30) -> None:
-        """工具跑完且我们手上有 unified diff —— 跟 Claude Code 的 Update 一样,
-        渲染成 '⎿  summary' + 缩进的行号化 diff(+ 绿 / - 红 / 上下文 DIM)。
-
-        summary_status 是工具返回的状态字符串(✅ 已修改 foo.py),会拼到摘要前面。
-        """
+        """工具跑完且我们手上有 unified diff —— 跟 Claude Code 的 Update 一样。"""
         added, removed, lines = _parse_diff_for_display(diff_text)
         if not lines:
-            # diff 解析没拿到内容(例如 "(无文本差异)") → 走普通 tool_result
-            self.tool_result(summary_status)
+            self.tool_result(summary_status, elapsed_sec=elapsed_sec)
             return
-        # 行数兜底截
         truncated = 0
         if len(lines) > max_lines:
             truncated = len(lines) - max_lines
             lines = lines[:max_lines]
         summary = f"{summary_status}  ·  {_diff_summary(added, removed)}"
+        if elapsed_sec is not None:
+            summary = f"{summary}  ·  {_fmt_elapsed(elapsed_sec)}"
         self._ensure_started()
         self._segments.append(("tool_diff", summary, lines, truncated))
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))
 
     def tool_result(self, text: str, *,
+                    elapsed_sec: Optional[float] = None,
                     max_lines: int = 10, max_line_chars: int = 300) -> None:
         """工具刚跑完时立刻把结果落到屏上,不用等模型再 invoke 一次。
 
@@ -384,12 +393,19 @@ class StreamingAgentRenderer:
             extra = len(clipped) - max_lines
             clipped = clipped[:max_lines] + [f"… ({extra} more lines)"]
         body = "\n".join(clipped)
+        # elapsed 拼到结果第一行末尾 (`· 0.3s`)
+        if elapsed_sec is not None:
+            body_lines = body.split("\n")
+            body_lines[0] = f"{body_lines[0]}  ·  {_fmt_elapsed(elapsed_sec)}"
+            body = "\n".join(body_lines)
         self._segments.append(("tool_result", body))
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))
 
-    def close(self, tools_used: int = 0, elapsed_seconds: float = 0.0) -> None:
-        """收尾:把流式纯文本 swap 成 markdown 渲染版本,然后停 Live。"""
+    def close(self, tools_used: int = 0, elapsed_seconds: float = 0.0,
+              tokens_in: int = 0, tokens_out: int = 0) -> None:
+        """收尾:把流式纯文本 swap 成 markdown 渲染版本,然后停 Live。
+        meta 行展示 total elapsed + token 总和 + tool 数。"""
         if not self._opened:
             return
         if self._live is not None:
@@ -402,7 +418,9 @@ class StreamingAgentRenderer:
         if tools_used > 0:
             parts.append(f"{tools_used} tools")
         if elapsed_seconds > 0:
-            parts.append(f"{elapsed_seconds:.1f}s")
+            parts.append(_fmt_elapsed(elapsed_seconds))
+        if tokens_in > 0 or tokens_out > 0:
+            parts.append(f"{tokens_in}↑ {tokens_out}↓")
         if parts:
             meta = "  ·  ".join(parts)
             t = Text("  ")
