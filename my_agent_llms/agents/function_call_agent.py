@@ -21,12 +21,16 @@ logger = logging.getLogger(__name__)
 
 # 流式回调签名:
 # - on_text_chunk(text): 模型每吐一段可见 content 时调用一次
+# - on_reasoning_chunk(text): 思考模型 (MiMo/DeepSeek-R1/Qwen-thinking 等)
+#   每吐一段 reasoning_content 时调用一次。UI 可以借此期间保留 "thinking..."
+#   spinner,避免在思考阶段被错误地认为"卡住了"
 # - on_tool_call(name, args_dict): 工具调用即将执行时调用一次
 # - on_permission_request(name, args_dict, preview) → bool: 需审批工具执行前询问用户
 # - on_tool_result(name, result_str, elapsed_sec): 工具执行完成后立即调用,带耗时
 # - on_llm_done(elapsed_sec, prompt_tokens, completion_tokens): 每次 LLM invoke
 #   结束后调用,带耗时 + token 用量 (provider 不支持 usage 时 tokens 为 None)
 TextChunkCallback = Callable[[str], None]
+ReasoningChunkCallback = Callable[[str], None]
 ToolCallCallback = Callable[[str, Dict[str, Any]], None]
 PermissionCallback = Callable[[str, Dict[str, Any], str], bool]
 ToolResultCallback = Callable[[str, str, float], None]
@@ -62,6 +66,7 @@ class MyFunctionCallAgent(Agent):
             on_permission_request: Optional[PermissionCallback] = None,
             on_tool_result: Optional[ToolResultCallback] = None,
             on_llm_done: Optional[LLMDoneCallback] = None,
+            on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
             **kwargs) -> str:
         """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。"""
         system_prompt = self._apply_honesty_contract(self.system_prompt)
@@ -80,6 +85,7 @@ class MyFunctionCallAgent(Agent):
             response = self._invoke_with_tools(
                 messages, tools, tool_choice,
                 on_text_chunk=on_text_chunk,
+                on_reasoning_chunk=on_reasoning_chunk,
                 **kwargs,
             )
             llm_elapsed = time.monotonic() - t_llm
@@ -170,6 +176,7 @@ class MyFunctionCallAgent(Agent):
             response = self._invoke_with_tools(
                 messages, tools, "none",
                 on_text_chunk=on_text_chunk,
+                on_reasoning_chunk=on_reasoning_chunk,
                 **kwargs,
             )
             llm_elapsed = time.monotonic() - t_llm
@@ -211,6 +218,7 @@ class MyFunctionCallAgent(Agent):
                            tools: List[Dict[str, Any]],
                            tool_choice: Union[str, dict],
                            on_text_chunk: Optional[TextChunkCallback] = None,
+                           on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
                            **kwargs):
         client = getattr(self.llm, "client", None)
         if client is None:
@@ -229,7 +237,7 @@ class MyFunctionCallAgent(Agent):
             **request_kwargs,
         )
 
-        response = self._stream_chat_completion(client, base_request, on_text_chunk)
+        response = self._stream_chat_completion(client, base_request, on_text_chunk, on_reasoning_chunk)
 
         # 自救：撞 max_tokens 上限、content 又是空（thinking 模型把预算吃在
         # reasoning 阶段最常见的失败形态）→ 把预算翻倍重试一次。
@@ -245,7 +253,7 @@ class MyFunctionCallAgent(Agent):
                 "finish_reason=length 且响应为空，max_tokens %s→%s 重试",
                 current_budget, bumped_request["max_tokens"],
             )
-            response = self._stream_chat_completion(client, bumped_request, on_text_chunk)
+            response = self._stream_chat_completion(client, bumped_request, on_text_chunk, on_reasoning_chunk)
 
         return response
 
@@ -254,11 +262,13 @@ class MyFunctionCallAgent(Agent):
         client,
         base_request: Dict[str, Any],
         on_text_chunk: Optional[TextChunkCallback],
+        on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
     ):
         """开 stream=True 调 chat.completions, 累积出与非流式等价的 response 对象。
 
         - 文本 content chunk → 实时回调 on_text_chunk 并累积
-        - reasoning_content chunk → 静默累积（content 为空时兜底）
+        - reasoning_content chunk → 实时回调 on_reasoning_chunk (用于 UI 显示
+          "thinking..." 指示);同时累积作为 content 为空时的兜底
         - tool_calls chunk → 按 index 累加 arguments JSON 片段
         - finish_reason 取最后一个非空值
 
@@ -303,6 +313,11 @@ class MyFunctionCallAgent(Agent):
             reasoning = getattr(delta, "reasoning_content", None) or ""
             if reasoning:
                 reasoning_parts.append(reasoning)
+                if on_reasoning_chunk is not None:
+                    try:
+                        on_reasoning_chunk(reasoning)
+                    except Exception:
+                        logger.exception("on_reasoning_chunk 回调异常,忽略不影响流式累积")
 
             for tc_chunk in getattr(delta, "tool_calls", None) or []:
                 idx = getattr(tc_chunk, "index", 0) or 0

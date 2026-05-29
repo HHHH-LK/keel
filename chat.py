@@ -833,6 +833,12 @@ class ChatCLI:
             _stop_status()
             renderer_slot["current"].text_chunk(text)
 
+        def _on_reasoning(_text: str) -> None:
+            # 思考模型 (MiMo/DeepSeek-R1 等) 推理阶段:没有可见 content,
+            # 之前 spinner 被首段 content 停掉了,屏上看着是"卡死"。
+            # 一旦收到 reasoning chunk 就把 spinner 转起来,告诉用户"在思考"
+            _restart_status()
+
         def _on_tool(name: str, args: Dict) -> None:
             _stop_status()
             renderer_slot["current"].tool_notice(name, _preview_tool_args(args))
@@ -902,6 +908,7 @@ class ChatCLI:
                 on_permission_request=_on_permission_request,
                 on_tool_result=_on_tool_result,
                 on_llm_done=_on_llm_done,
+                on_reasoning_chunk=_on_reasoning,
             )
         except Exception as exc:
             _stop_status()
@@ -936,15 +943,13 @@ class ChatCLI:
         while True:
             try:
                 line = self.get_input()
+                if not line:
+                    continue
+                if self.handle_command(line):
+                    continue
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[yellow]再见 👋[/yellow]")
                 break
-
-            if not line:
-                continue
-
-            if self.handle_command(line):
-                continue
 
             self.chat_once(line)
 
