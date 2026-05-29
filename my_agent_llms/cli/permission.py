@@ -90,4 +90,10 @@ def prompt_permission(name: str, args: Dict[str, Any], preview: str) -> bool:
     console.print(
         f"  [{theme.DIM}][y] 允许   [n] 拒绝   [Enter=y · Esc=n][/]"
     )
-    return _read_decision_key()
+    decision = _read_decision_key()
+    # 决策完立刻 echo 一行反馈,让用户确信"我按了什么,系统收到没"
+    if decision:
+        console.print(f"  [green]✓ 已同意[/green]")
+    else:
+        console.print(f"  [yellow]✗ 已拒绝[/yellow]")
+    return decision
