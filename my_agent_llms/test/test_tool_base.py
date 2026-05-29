@@ -21,7 +21,7 @@ def test_default_requires_approval_is_false():
 def test_default_preview_returns_repr_of_args():
     t = _Dummy()
     out = t.preview_for_approval({"path": "a.md", "n": 3})
-    assert "path" in out and "a.md" in out and "3" in out
+    assert "path" in out and "a.md" in out and "n" in out and "3" in out
 
 
 def test_subclass_can_override_requires_approval():
@@ -32,6 +32,6 @@ def test_subclass_can_override_requires_approval():
 
 def test_subclass_can_override_preview():
     class WriteLike(_Dummy):
-        def preview_for_approval(self, args):
-            return f"will write to {args.get('path')}"
+        def preview_for_approval(self, parameters: Dict[str, Any]) -> str:
+            return f"will write to {parameters.get('path')}"
     assert WriteLike().preview_for_approval({"path": "x.txt"}) == "will write to x.txt"
