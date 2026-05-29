@@ -54,6 +54,34 @@ def _bar_lines(text_or_ansi: str, bar_color: str, *,
     return out
 
 
+def _step_lines(text_or_ansi: str, dot_color: str, *,
+                from_ansi: bool) -> Text:
+    """Claude Code 风格:第一行带彩色 ⏺,续行缩进 2 格。一个 ⏺ = 一个 step。"""
+    out = Text()
+    for i, line in enumerate(text_or_ansi.split("\n")):
+        if i == 0:
+            out.append("⏺ ", style=dot_color)
+        else:
+            out.append("\n  ")
+        if from_ansi:
+            out.append_text(Text.from_ansi(line))
+        else:
+            out.append(line)
+    return out
+
+
+def _result_dot_color(text: str) -> str:
+    """工具结果首字符决定 ⏺ 颜色:✅=绿,❌/拒绝=红,其它=DIM。"""
+    if not text:
+        return theme.DIM
+    stripped = text.lstrip()
+    if stripped.startswith("✅"):
+        return theme.OK
+    if stripped.startswith("❌") or "拒绝" in stripped:
+        return theme.ERR
+    return theme.DIM
+
+
 def render_user(console: Console, text: str) -> None:
     """Echo the user's input with cyan bar + role label."""
     console.print()
@@ -138,8 +166,8 @@ class StreamingAgentRenderer:
                 content = seg[1]
                 if not content:
                     continue
+                # 普通回答 = 白色 ⏺(theme.DEFAULT 走终端默认前景色)
                 if markdown:
-                    # 子 console 渲染 markdown → ANSI → 每行加 ┃ bar
                     buf = io.StringIO()
                     sub = Console(
                         file=buf,
@@ -149,27 +177,20 @@ class StreamingAgentRenderer:
                     )
                     sub.print(Markdown(content))
                     ansi = buf.getvalue().rstrip("\n")
-                    renderables.append(_bar_lines(ansi, self.role_color, from_ansi=True))
+                    renderables.append(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
                 else:
-                    renderables.append(_bar_lines(content, self.role_color, from_ansi=False))
+                    renderables.append(_step_lines(content, theme.DEFAULT, from_ansi=False))
             elif kind == "tool":
+                # tool_notice (即将调用) = DIM ⏺,只是 "我要做 X" 的预告
                 name = seg[1]
                 preview = seg[2] if len(seg) > 2 else ""
-                bar = Text("┃ ", style=self.role_color)
-                inner = Text("→ ", style=theme.DIM)
-                inner.append(name, style=theme.DIM)
-                if preview:
-                    inner.append(f"({preview})", style=theme.DIM)
-                bar.append_text(inner)
-                renderables.append(bar)
+                body = name if not preview else f"{name}({preview})"
+                renderables.append(_step_lines(body, theme.DIM, from_ansi=False))
             elif kind == "tool_result":
-                # 工具刚跑完的即时回显 —— 给"按 y 后立刻看到结果"用,不用等模型再说一遍
+                # tool_result = ⏺ 颜色看结果首字符:✅=绿 / ❌/拒绝=红 / 其它=DIM
                 text_line = seg[1]
-                bar = Text("┃ ", style=self.role_color)
-                inner = Text("  ↳ ", style=theme.DIM)
-                inner.append(text_line, style=theme.DIM)
-                bar.append_text(inner)
-                renderables.append(bar)
+                color = _result_dot_color(text_line)
+                renderables.append(_step_lines(text_line, color, from_ansi=False))
 
         if not renderables:
             return Text("")

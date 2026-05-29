@@ -838,6 +838,12 @@ class ChatCLI:
                 ok = False
             # 重置 renderer 让后续 chunk 进新 region
             renderer_slot["current"] = chat_view.StreamingAgentRenderer(console)
+            if not ok:
+                # 拒绝时,工具不会跑,on_tool_result 也不会被调,
+                # 在聊天流里补一条红色 ⏺ 让拒绝也是一个可见的 step
+                renderer_slot["current"].tool_result(
+                    f"❌ 用户拒绝了对 {name} 的调用"
+                )
             # 审批一结束就把 spinner 转起来,用户看到"我正在干活",
             # 直到工具结果或模型下一段 chunk 把它停掉
             _restart_status()
