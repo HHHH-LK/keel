@@ -372,12 +372,11 @@ class StreamingAgentRenderer:
 
     def tool_result(self, text: str, *,
                     elapsed_sec: Optional[float] = None,
-                    max_lines: int = 10, max_line_chars: int = 300) -> None:
+                    max_lines: int = 1, max_line_chars: int = 300) -> None:
         """工具刚跑完时立刻把结果落到屏上,不用等模型再 invoke 一次。
 
-        多行结果保留(跟 Claude Code 一样),只对超长情况兜底截断:
-        - 单行超 max_line_chars → 截断加 '…'
-        - 总行数超 max_lines → 截到 max_lines 并加 '… (N more lines)' 提示
+        默认只显示第一行(Claude Code 折叠风格)。模型还是拿到完整结果,
+        所以"细节"没丢,只是 UI 不堆。如需展开,可临时调高 max_lines。
         """
         if not text:
             return
@@ -388,10 +387,9 @@ class StreamingAgentRenderer:
             (ln if len(ln) <= max_line_chars else ln[:max_line_chars - 1] + "…")
             for ln in lines
         ]
-        # 行数兜底截
+        # 行数兜底截:超出直接砍尾,不再加 '(N more lines)' 噪音行
         if len(clipped) > max_lines:
-            extra = len(clipped) - max_lines
-            clipped = clipped[:max_lines] + [f"… ({extra} more lines)"]
+            clipped = clipped[:max_lines]
         body = "\n".join(clipped)
         # elapsed 拼到结果第一行末尾 (`· 0.3s`)
         if elapsed_sec is not None:
