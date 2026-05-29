@@ -21,7 +21,7 @@ class EditFile(Tool):
 
     def __init__(self, workspace: Workspace):
         super().__init__(
-            name="EditFile",
+            name="Edit",
             description=(
                 "精确替换 sandbox 内文件的某段文字。传 path + old_string + new_string;"
                 "old_string 必须在文件中唯一匹配。框架会在执行前同步弹审批框给用户。"

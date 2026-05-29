@@ -15,7 +15,7 @@ MANIFEST_NAME = "MANIFEST.json"
 class ListDir(Tool):
     def __init__(self, workspace: Workspace):
         super().__init__(
-            name="ListDir",
+            name="LS",
             description="列 sandbox 内文件,默认递归 2 层。attached 文件会显示来源路径。",
         )
         self.ws = workspace

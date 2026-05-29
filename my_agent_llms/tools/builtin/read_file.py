@@ -6,16 +6,16 @@ from typing import Any, Dict, List
 from my_agent_llms.tools.base import Tool, ToolParameter
 from my_agent_llms.workspace import Workspace, WorkspaceViolation
 
-DEFAULT_LIMIT = 200
+DEFAULT_LIMIT = 2000
 
 
 class ReadFile(Tool):
     def __init__(self, workspace: Workspace):
         super().__init__(
-            name="ReadFile",
+            name="Read",
             description=(
                 "读 sandbox 内文本文件,返回带行号的内容。"
-                "大文件默认仅显示前 200 行,需要看后续内容请传 offset/limit 分页。"
+                "默认一次读完(上限 2000 行);超长文件用 offset/limit 分页。"
             ),
         )
         self.ws = workspace
@@ -59,7 +59,13 @@ class ReadFile(Tool):
         chunk = lines[offset : offset + limit]
         numbered = "\n".join(f"{offset + i + 1}\t{line}" for i, line in enumerate(chunk))
 
-        header = f"# {self._safe_rel(p)} (共 {total} 行,已显示 {offset + 1}-{offset + len(chunk)})\n"
+        # 首行是简短摘要,被 tool_result 折叠后给用户看 (Claude Code 风格);
+        # 后面 numbered 才是给 LLM 的真正文件内容
+        shown = len(chunk)
+        if offset == 0 and shown == total:
+            header = f"Read {total} lines\n"
+        else:
+            header = f"Read {shown} lines (offset {offset}, total {total})\n"
         return header + numbered
 
     def _safe_rel(self, p) -> str:

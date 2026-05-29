@@ -12,6 +12,7 @@ dependencies = [
     "optional>=0.0.1",
     "prompt-toolkit>=3.0.52",
     "pydantic>=2.13.2",
+    "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
     "serpapi>=1.0.2",

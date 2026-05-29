@@ -136,25 +136,53 @@ def is_ready(cfg: Dict) -> bool:
     return bool(cfg.get("api_key") and cfg.get("model") and cfg.get("provider"))
 
 
-def _preview_tool_args(args: Dict, *, max_total: int = 500, max_value: int = 300) -> str:
+def _smart_elide(s: str, max_len: int) -> str:
+    """路径友好的字符串截断,给 ⏺ tool_notice 显示用:
+      1. 含 $HOME 前缀 → 替换为 ~ (常见的 /Users/foo/Desktop/x 直接缩成 ~/Desktop/x)
+      2. 仍超长且看着像路径(含 / 且没空格/换行) → 保留 '…/<最后 2 段>'
+      3. 其它(命令行、prose、含空格的内容) → 走普通末尾 … 截断,不动结构
+    设计意图:7 个连排的 ReadFile/AttachDir 也不会因路径噪音堆爆屏。
+    """
+    if " " in s or "\n" in s or "/" not in s:
+        if len(s) > max_len:
+            return s[:max_len - 1] + "…"
+        return s
+    # 像路径 —— 先替 home,大概率一步到位
+    home = os.path.expanduser("~")
+    if home and home != "~" and s.startswith(home):
+        s = "~" + s[len(home):]
+    if len(s) <= max_len:
+        return s
+    # 还超 → 保留最后 2 段(目录 + 文件名),前缀塞 '…/'
+    parts = s.rstrip("/").split("/")
+    if len(parts) >= 2:
+        eli = "…/" + "/".join(parts[-2:])
+        if len(eli) <= max_len:
+            return eli
+        base = parts[-1]
+        if len(base) > max_len - 2:
+            base = base[:max_len - 3] + "…"
+        return f"…/{base}"
+    return s[:max_len - 1] + "…"
+
+
+def _preview_tool_args(args: Dict, *, max_total: int = 500, max_value: int = 80) -> str:
     """格式化工具参数给 ⏺ tool_notice 用。限度放宽,跟 Claude Code 一致 ——
-    用户得看清模型到底准备调什么(尤其是命令行/路径类参数);单值过长才截断。"""
+    用户得看清模型到底准备调什么(尤其是命令行/路径类参数);单值过长才截断。
+    字符串值统一走 _smart_elide:路径感知 + $HOME 替换,避免连排调用堆出噪音。"""
     if not args:
         return ""
-    # 单参数 → 只显示 value(像 Claude Code 的 Bash(cmd) 那样),省去 key=
-    if len(args) == 1:
-        only_v = next(iter(args.values()))
-        v_repr = str(only_v) if isinstance(only_v, str) else repr(only_v)
-        if len(v_repr) > max_total:
-            v_repr = v_repr[:max_total - 3] + "..."
-        return v_repr
-    # 多参数 → key=value, key=value
+    # Claude Code 风:全部位置式,丢掉 key=,值原样显示(字符串不加引号);
+    # 单/多参数走同一条路,避免 ReadFile(path) vs ReadFile(path='x', offset=200) 风格不一致
     items = []
-    for k, v in args.items():
-        v_repr = repr(v)
-        if len(v_repr) > max_value:
-            v_repr = v_repr[:max_value - 3] + "..."
-        items.append(f"{k}={v_repr}")
+    for v in args.values():
+        if isinstance(v, str):
+            items.append(_smart_elide(v, max_len=max_value))
+        else:
+            v_repr = repr(v)
+            if len(v_repr) > max_value:
+                v_repr = v_repr[:max_value - 3] + "..."
+            items.append(v_repr)
     full = ", ".join(items)
     if len(full) > max_total:
         full = full[:max_total - 3] + "..."
@@ -239,9 +267,9 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 "   - 是文件 → AttachFile 拉进 sandbox\n"
                 "   - 是目录 → AttachDir 整个目录递归拉进 sandbox\n"
                 "     (自动跳过 .git/.venv/node_modules/__pycache__/二进制等,"
-                "      返回值会附带文件清单,无需再额外 ListDir)\n"
-                "2. sandbox 内用 ReadFile / EditFile / WriteFile / ListDir 操作\n"
-                "3. 写类工具(EditFile / WriteFile / ExportFile)调用时框架会同步弹"
+                "      返回值会附带文件清单,无需再额外 LS)\n"
+                "2. sandbox 内用 Read / Edit / Write / LS 操作\n"
+                "3. 写类工具(Edit / Write / ExportFile)调用时框架会同步弹"
                 "审批框给用户。你不用再追问'要不要确认',直接调即可。"
                 "用户若拒绝,你会收到 \"用户拒绝了对 X 的调用\",请结合上下文"
                 "道歉/改方案/继续聊。\n"
@@ -849,6 +877,10 @@ class ChatCLI:
         def _on_permission_request(name: str, args: Dict, preview: str) -> bool:
             _stop_status()
             cur = renderer_slot["current"]
+            # 把旧 renderer 里 _on_tool 刚渲的 ⏺ 摘出来,转到新 renderer 上去 ——
+            # 否则旧 renderer 一 close 就把 DIM ⏺ 提交到 scrollback,
+            # 等审批 & 结果回来时已经染不上色了
+            pending = cur.pop_last_tool_notice()
             if cur.has_output:
                 cur.close()
             try:
@@ -858,13 +890,19 @@ class ChatCLI:
                 ok = False
             # 重置 renderer 让后续 chunk 进新 region
             renderer_slot["current"] = chat_view.StreamingAgentRenderer(console)
+            tool_name, tool_preview = (pending if pending
+                                       else (name, _preview_tool_args(args)))
             if ok:
+                # 在新 renderer 上重新摆一个 DIM ⏺,等 tool_result 回来时染绿/红
+                renderer_slot["current"].tool_notice(tool_name, tool_preview)
                 # 暂存 diff,等 on_tool_result 来时配对渲染成 Claude Code Update 风格
                 approved_diff_slot["name"] = name
                 approved_diff_slot["preview"] = preview
             else:
-                # 拒绝时,工具不会跑,on_tool_result 也不会被调,
-                # 在聊天流里补一条红色 ⏺ 让拒绝也是一个可见的 step
+                # 拒绝是终态 —— ⏺ 直接红色,后面跟 ⎿ ❌ 说明原因
+                renderer_slot["current"].tool_notice(
+                    tool_name, tool_preview, color=theme.ERR
+                )
                 renderer_slot["current"].tool_result(
                     f"❌ 用户拒绝了对 {name} 的调用"
                 )

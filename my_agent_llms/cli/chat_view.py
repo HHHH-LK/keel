@@ -303,11 +303,13 @@ class StreamingAgentRenderer:
                 inline = _render_inline_markdown(content)
                 renderables.append(_step_lines_from_text(inline, theme.DEFAULT))
             elif kind == "tool":
-                # tool_notice (即将调用) = DIM ⏺,只是 "我要做 X" 的预告
+                # tool_notice (即将调用) 初始 DIM ⏺;拿到结果后会被回填成
+                # 绿 (成功) / 红 (失败),让 ⏺ 直观反映这一步是否成功
                 name = seg[1]
                 preview = seg[2] if len(seg) > 2 else ""
+                color = seg[3] if len(seg) > 3 else theme.DIM
                 body = name if not preview else f"{name}({preview})"
-                renderables.append(_step_lines(body, theme.DIM, from_ansi=False))
+                renderables.append(_step_lines(body, color, from_ansi=False))
             elif kind == "tool_result":
                 # tool_result 是上一步 (tool_notice) 的续行 —— 用 ⎿ 连接,
                 # 不再起一个新 ⏺,避免一次工具调用看着像两个 step
@@ -339,7 +341,11 @@ class StreamingAgentRenderer:
             self._render_body(markdown=False),
             console=self.console,
             refresh_per_second=12,
-            transient=False,  # 保留最后一次 update (close 时的 markdown 版本)
+            transient=False,              # 保留最后一次 update (close 时的 markdown 版本)
+            vertical_overflow="visible",  # 默认 'ellipsis' 会在内容超出终端高度时
+                                          # 显示一个 '…' 直到 Live.stop() —— 看着像
+                                          # "流式卡住、close 时才一口气全吐"。改成
+                                          # 'visible' 后,长 reply 真·边来边滚屏
         )
         self._live.start()
 
@@ -357,11 +363,37 @@ class StreamingAgentRenderer:
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))
 
-    def tool_notice(self, name: str, args_preview: str = "") -> None:
+    def tool_notice(self, name: str, args_preview: str = "",
+                    color: Optional[str] = None) -> None:
         self._ensure_started()
-        self._segments.append(("tool", name, args_preview))
+        # 第 4 位是 ⏺ 颜色;默认 DIM,等 tool_result/tool_diff 回来后回填。
+        # 调用方也可显式传入颜色 (e.g. ERR for 拒绝,直接 final color)。
+        self._segments.append(("tool", name, args_preview, color or theme.DIM))
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))
+
+    def pop_last_tool_notice(self) -> Optional[tuple[str, str]]:
+        """弹出最近一个 tool_notice,返回 (name, preview) 让 caller 转移到别处。
+
+        用途:permission gate 要把 renderer 关掉再起新的,旧 renderer 上的
+        ⏺ 一旦提交到 scrollback 就再也染不上色;调用方应在 close 前把
+        tool_notice "搬"到新 renderer,等 result 回来时统一染色。
+        """
+        for i in range(len(self._segments) - 1, -1, -1):
+            if self._segments[i][0] == "tool":
+                seg = self._segments.pop(i)
+                if self._live is not None:
+                    self._live.update(self._render_body(markdown=False))
+                return seg[1], seg[2]
+        return None
+
+    def _recolor_last_tool(self, color: str) -> None:
+        """把最近一个 tool_notice 的 ⏺ 颜色回填成 color (绿=成功 / 红=失败)。"""
+        for i in range(len(self._segments) - 1, -1, -1):
+            if self._segments[i][0] == "tool":
+                seg = self._segments[i]
+                self._segments[i] = ("tool", seg[1], seg[2], color)
+                return
 
     def tool_diff_result(self, summary_status: str, diff_text: str, *,
                          elapsed_sec: Optional[float] = None,
@@ -379,6 +411,8 @@ class StreamingAgentRenderer:
         if elapsed_sec is not None:
             summary = f"{summary}  ·  {_fmt_elapsed(elapsed_sec)}"
         self._ensure_started()
+        # diff 路径意味着写入成功,把上面 ⏺ 染绿
+        self._recolor_last_tool(theme.OK)
         self._segments.append(("tool_diff", summary, lines, truncated))
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))
@@ -409,6 +443,8 @@ class StreamingAgentRenderer:
             body_lines = body.split("\n")
             body_lines[0] = f"{body_lines[0]}  ·  {_fmt_elapsed(elapsed_sec)}"
             body = "\n".join(body_lines)
+        # 同步把上面 ⏺ 染色 (绿=成功 / 红=失败 或 拒绝)
+        self._recolor_last_tool(_result_dot_color(body))
         self._segments.append(("tool_result", body))
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))

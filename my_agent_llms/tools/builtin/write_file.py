@@ -14,7 +14,7 @@ class WriteFile(Tool):
 
     def __init__(self, workspace: Workspace):
         super().__init__(
-            name="WriteFile",
+            name="Write",
             description=(
                 "写整个文件内容到 sandbox 路径(覆盖已有或新建)。传 path + content;"
                 "框架会在执行前同步弹审批框给用户。"

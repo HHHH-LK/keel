@@ -14,18 +14,29 @@ def test_read_small_file_returns_numbered_lines(tmp_path):
     out = _run(ws, path="a.md")
     assert "1\thello" in out
     assert "2\tworld" in out
-    assert "共 2 行" in out
+    assert out.startswith("Read 2 lines")
 
 
-def test_read_large_file_pages_by_default(tmp_path):
+def test_read_medium_file_no_paging_by_default(tmp_path):
+    """默认上限 2000 行,500 行的文件一次读完(Claude Code Read 一致)。"""
     ws = Workspace(tmp_path)
     big = "\n".join(str(i) for i in range(1, 501)) + "\n"
     (tmp_path / "big.txt").write_text(big)
     out = _run(ws, path="big.txt")
     assert "1\t1" in out
-    assert "200\t200" in out
-    assert "201\t201" not in out
-    assert "共 500 行" in out and "已显示 1-200" in out
+    assert "500\t500" in out
+    assert out.startswith("Read 500 lines\n")
+
+
+def test_read_very_large_file_pages_at_default_limit(tmp_path):
+    """文件超过默认 2000 行时,首屏只读前 2000 行;首行带 offset/total 提示。"""
+    ws = Workspace(tmp_path)
+    huge = "\n".join(str(i) for i in range(1, 2501)) + "\n"
+    (tmp_path / "huge.txt").write_text(huge)
+    out = _run(ws, path="huge.txt")
+    assert "2000\t2000" in out
+    assert "2001\t2001" not in out
+    assert out.startswith("Read 2000 lines (offset 0, total 2500)")
 
 
 def test_read_with_offset_and_limit(tmp_path):
