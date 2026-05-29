@@ -162,6 +162,14 @@ class StreamingAgentRenderer:
                     inner.append(f"({preview})", style=theme.DIM)
                 bar.append_text(inner)
                 renderables.append(bar)
+            elif kind == "tool_result":
+                # 工具刚跑完的即时回显 —— 给"按 y 后立刻看到结果"用,不用等模型再说一遍
+                text_line = seg[1]
+                bar = Text("┃ ", style=self.role_color)
+                inner = Text("  ↳ ", style=theme.DIM)
+                inner.append(text_line, style=theme.DIM)
+                bar.append_text(inner)
+                renderables.append(bar)
 
         if not renderables:
             return Text("")
@@ -201,6 +209,19 @@ class StreamingAgentRenderer:
     def tool_notice(self, name: str, args_preview: str = "") -> None:
         self._ensure_started()
         self._segments.append(("tool", name, args_preview))
+        if self._live is not None:
+            self._live.update(self._render_body(markdown=False))
+
+    def tool_result(self, text: str) -> None:
+        """工具刚跑完时立刻把结果落到屏上,不用等模型再 invoke 一次。"""
+        if not text:
+            return
+        self._ensure_started()
+        # 只取首行,长结果(比如 ReadFile 的大段内容)截断
+        first = text.splitlines()[0] if text else ""
+        if len(first) > 200:
+            first = first[:200] + " …"
+        self._segments.append(("tool_result", first))
         if self._live is not None:
             self._live.update(self._render_body(markdown=False))
 

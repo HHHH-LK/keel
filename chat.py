@@ -237,7 +237,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 "4. ExportFile 写回原位置;sandbox 内新建的文件 ExportFile 时必须给 dest_path\n"
             ),
             memory_config=memory_config,
-            max_steps=50,
+            max_steps=1000,
         )
     except Exception as exc:
         help_view.print_error(console, f"Agent 构造失败: {exc}")
@@ -795,29 +795,39 @@ class ChatCLI:
         # 用 slot 装 renderer 让 callback 可以重置它
         renderer_slot = {"current": chat_view.StreamingAgentRenderer(console)}
 
-        status = console.status(
-            f"[{theme.AGENT}]伙伴[/] [{theme.DIM}]·  thinking…[/]",
-            spinner="dots",
-            spinner_style=theme.AGENT,
-        )
-        status.start()
-        status_stopped = {"v": False}
+        # spinner 用 slot 装,审批后 / 工具完成后可重启,让"按 y 立刻看到转圈"
+        def _make_status():
+            return console.status(
+                f"[{theme.AGENT}]伙伴[/] [{theme.DIM}]·  thinking…[/]",
+                spinner="dots",
+                spinner_style=theme.AGENT,
+            )
+        status_slot = {"current": _make_status(), "active": True}
+        status_slot["current"].start()
 
-        def _stop_status_once() -> None:
-            if not status_stopped["v"]:
-                status_stopped["v"] = True
-                status.stop()
+        def _stop_status() -> None:
+            if status_slot["active"]:
+                status_slot["active"] = False
+                status_slot["current"].stop()
+
+        def _restart_status() -> None:
+            # 已经在转就不重复;之前停了就开一个新的
+            if status_slot["active"]:
+                return
+            status_slot["current"] = _make_status()
+            status_slot["current"].start()
+            status_slot["active"] = True
 
         def _on_chunk(text: str) -> None:
-            _stop_status_once()
+            _stop_status()
             renderer_slot["current"].text_chunk(text)
 
         def _on_tool(name: str, args: Dict) -> None:
-            _stop_status_once()
+            _stop_status()
             renderer_slot["current"].tool_notice(name, _preview_tool_args(args))
 
         def _on_permission_request(name: str, args: Dict, preview: str) -> bool:
-            _stop_status_once()
+            _stop_status()
             cur = renderer_slot["current"]
             if cur.has_output:
                 cur.close()
@@ -828,7 +838,18 @@ class ChatCLI:
                 ok = False
             # 重置 renderer 让后续 chunk 进新 region
             renderer_slot["current"] = chat_view.StreamingAgentRenderer(console)
+            # 审批一结束就把 spinner 转起来,用户看到"我正在干活",
+            # 直到工具结果或模型下一段 chunk 把它停掉
+            _restart_status()
             return ok
+
+        def _on_tool_result(name: str, result: str) -> None:
+            # 工具刚跑完,立刻把结果首行 echo 到 renderer,
+            # 不用等模型再 invoke 一次"复述"一遍
+            _stop_status()
+            renderer_slot["current"].tool_result(result)
+            # 工具结果出完,接下来还得等模型再说点啥,把 spinner 再转起来
+            _restart_status()
 
         try:
             response = self.agent.run(
@@ -836,16 +857,17 @@ class ChatCLI:
                 on_text_chunk=_on_chunk,
                 on_tool_call=_on_tool,
                 on_permission_request=_on_permission_request,
+                on_tool_result=_on_tool_result,
             )
         except Exception as exc:
-            _stop_status_once()
+            _stop_status()
             cur = renderer_slot["current"]
             if cur.has_output:
                 cur.close()
             chat_view.render_agent_error(console, str(exc))
             return
         finally:
-            _stop_status_once()
+            _stop_status()
 
         elapsed = time.monotonic() - start
         tools_used = getattr(self.agent, "last_tool_call_count", 0)
