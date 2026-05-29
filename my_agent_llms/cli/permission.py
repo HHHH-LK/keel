@@ -30,8 +30,10 @@ def _is_tty() -> bool:
 
 
 def _looks_like_diff(text: str) -> bool:
+    """unified diff 总有 --- / +++ / @@ 中至少一个;只识别这些头标记,
+    避免把 '-v' / '+1 item' 之类的普通文本误当成 diff 高亮。"""
     stripped = text.lstrip()
-    return stripped.startswith(("---", "+++", "@@", "+", "-"))
+    return stripped.startswith(("---", "+++", "@@"))
 
 
 def _read_decision_key() -> bool:
