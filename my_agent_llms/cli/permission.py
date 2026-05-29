@@ -91,9 +91,12 @@ def prompt_permission(name: str, args: Dict[str, Any], preview: str) -> bool:
         f"  [{theme.DIM}][y] 允许   [n] 拒绝   [Enter=y · Esc=n][/]"
     )
     decision = _read_decision_key()
-    # 决策完立刻 echo 一行反馈,让用户确信"我按了什么,系统收到没"
+    # 跟 Claude Code 一致:按完键就把 hint 那一行抹掉,换成决策反馈
+    # ANSI:cursor up 1 行 → 清整行 → 回到列 0
+    sys.stdout.write("\x1b[1A\x1b[2K\r")
+    sys.stdout.flush()
     if decision:
-        console.print(f"  [green]✓ 已同意[/green]")
+        console.print(f"  [{theme.OK}]✓ 已同意[/]")
     else:
-        console.print(f"  [yellow]✗ 已拒绝[/yellow]")
+        console.print(f"  [{theme.ERR}]✗ 已拒绝[/]")
     return decision
