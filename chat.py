@@ -796,7 +796,7 @@ class ChatCLI:
         return True
 
     def chat_once(self, user_input: str) -> None:
-        chat_view.render_user(console, user_input)
+        # 用户输入已经在 ❯ 提示行上,不重复 echo (Claude Code 风格)
 
         if self.agent is None:
             chat_view.print_not_ready_hint(console)
