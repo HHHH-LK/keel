@@ -136,8 +136,19 @@ def is_ready(cfg: Dict) -> bool:
     return bool(cfg.get("api_key") and cfg.get("model") and cfg.get("provider"))
 
 
-def _preview_tool_args(args: Dict, *, max_total: int = 60, max_value: int = 30) -> str:
-    """格式化工具参数给 UI 提示用,过长的值截断。"""
+def _preview_tool_args(args: Dict, *, max_total: int = 500, max_value: int = 300) -> str:
+    """格式化工具参数给 ⏺ tool_notice 用。限度放宽,跟 Claude Code 一致 ——
+    用户得看清模型到底准备调什么(尤其是命令行/路径类参数);单值过长才截断。"""
+    if not args:
+        return ""
+    # 单参数 → 只显示 value(像 Claude Code 的 Bash(cmd) 那样),省去 key=
+    if len(args) == 1:
+        only_v = next(iter(args.values()))
+        v_repr = str(only_v) if isinstance(only_v, str) else repr(only_v)
+        if len(v_repr) > max_total:
+            v_repr = v_repr[:max_total - 3] + "..."
+        return v_repr
+    # 多参数 → key=value, key=value
     items = []
     for k, v in args.items():
         v_repr = repr(v)
