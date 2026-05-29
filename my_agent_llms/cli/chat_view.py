@@ -16,38 +16,42 @@ from typing import List, Optional, Tuple
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.markdown import Markdown
+from rich.markup import escape as _rich_escape
 from rich.text import Text
-from rich.theme import Theme
 
 from . import theme
 
 
-# Claude Code 风格的极简 markdown 主题 —— 覆盖 rich.Markdown 那一套
-# "花花绿绿"(彩色 header / 彩色 bullet / 彩色 hr / 彩色 code 背景)。
-# 留 bold / italic / 轻量 inline code 即可,其它 default 终端色。
-_MINIMAL_MD_THEME = Theme({
-    "markdown.paragraph":   "",
-    "markdown.text":        "",
-    "markdown.em":          "italic",
-    "markdown.strong":      "bold",
-    "markdown.code":        "dim bold",        # 行内 code,轻量
-    "markdown.code_block":  "dim",
-    "markdown.block_quote": "dim",
-    "markdown.list":        "",
-    "markdown.item":        "",
-    "markdown.item.bullet": "",
-    "markdown.item.number": "",
-    "markdown.h1":          "bold",
-    "markdown.h2":          "bold",
-    "markdown.h3":          "bold",
-    "markdown.h4":          "bold",
-    "markdown.h5":          "bold",
-    "markdown.h6":          "bold",
-    "markdown.hr":          "dim",
-    "markdown.link":        "underline",
-    "markdown.link_url":    "dim underline",
-})
+# Claude Code 风格的极简 inline markdown 渲染:
+# 只处理 **bold** / *italic* / `code` 这三件套,把它们的字面装饰符号
+# (** / * / `) 抹掉换成 rich style;结构性 markdown (## 头 / - 列表 /
+# | 表格 / --- / ``` 代码块) 全部保留原文不动 —— 跟 Claude Code 一致,
+# 用户写啥屏上看到啥,不被 rich.Markdown 强加 ASCII 表 / 彩色横线。
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_BOLD_RE        = re.compile(r"\*\*([^*\n]+?)\*\*")
+_ITALIC_RE      = re.compile(r"(?<![*\w])\*([^*\n]+?)\*(?!\w)")
+
+
+def _render_inline_markdown(text: str) -> Text:
+    """text → Rich Text,只渲 inline markdown (bold/italic/code)。其它原文保留。"""
+    safe = _rich_escape(text)      # 先把用户写的 [foo] 转义掉,免得跟 rich markup 冲突
+    safe = _INLINE_CODE_RE.sub(r"[dim bold]\1[/]", safe)
+    safe = _BOLD_RE.sub(r"[bold]\1[/]", safe)
+    safe = _ITALIC_RE.sub(r"[italic]\1[/]", safe)
+    return Text.from_markup(safe)
+
+
+def _step_lines_from_text(text_obj: Text, dot_color: str) -> Text:
+    """跟 _step_lines 一样,但接受 Rich Text 而非 str —— 用于已带 inline style 的内容。"""
+    out = Text()
+    lines = text_obj.split("\n", include_separator=False)
+    for i, line in enumerate(lines):
+        if i == 0:
+            out.append("⏺ ", style=dot_color)
+        else:
+            out.append("\n  ")
+        out.append_text(line)
+    return out
 
 
 def _now_hhmm() -> str:
@@ -236,19 +240,10 @@ def render_user(console: Console, text: str) -> None:
 
 def render_agent(console: Console, reply: str, *,
                  tools_used: int = 0, elapsed_seconds: float = 0.0) -> None:
-    """Render an AI reply: ⏺ + minimal markdown body (Claude Code 风格)。"""
+    """Render an AI reply: ⏺ + inline-markdown body (Claude Code 风格)。"""
     console.print()
-    buf = io.StringIO()
-    sub = Console(
-        file=buf,
-        force_terminal=True,
-        color_system="truecolor",
-        width=max(40, console.width - 4),
-        theme=_MINIMAL_MD_THEME,
-    )
-    sub.print(Markdown(reply))
-    ansi = buf.getvalue().rstrip("\n")
-    console.print(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
+    inline = _render_inline_markdown(reply)
+    console.print(_step_lines_from_text(inline, theme.DEFAULT))
 
 
 def render_agent_error(console: Console, message: str) -> None:
@@ -303,18 +298,10 @@ class StreamingAgentRenderer:
                 content = seg[1]
                 if not content:
                     continue
-                # 普通回答 —— 实时 markdown 渲染 (Claude Code 风格,minimal theme)
-                buf = io.StringIO()
-                sub = Console(
-                    file=buf,
-                    force_terminal=True,
-                    color_system="truecolor",
-                    width=max(40, self.console.width - 4),
-                    theme=_MINIMAL_MD_THEME,
-                )
-                sub.print(Markdown(content))
-                ansi = buf.getvalue().rstrip("\n")
-                renderables.append(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
+                # 普通回答 —— inline markdown 渲染 (**bold** / *italic* / `code`)
+                # 结构性 markdown (## 头 / 表格 / --- 等) 保留原文,跟 Claude Code 一致
+                inline = _render_inline_markdown(content)
+                renderables.append(_step_lines_from_text(inline, theme.DEFAULT))
             elif kind == "tool":
                 # tool_notice (即将调用) = DIM ⏺,只是 "我要做 X" 的预告
                 name = seg[1]
