@@ -73,9 +73,10 @@ def _make_agent(monkeypatch, tool_calls_then_done):
     tmpdir = tempfile.mkdtemp()
     agent.memory = MemoryManager(MemoryConfig(
         storage_dir=Path(tmpdir), cold_backend="none", vector_backend="memory"))
-    # response_hooks 不调用
+    # response_hooks / honesty / finalize_turn 全部桩成 no-op,避免测试依赖隐式内部
     agent._run_response_hooks = lambda inp, resp, msgs: resp
     agent._apply_honesty_contract = lambda p: p or ""
+    agent._finalize_turn = lambda inp, resp: None
 
     calls = list(tool_calls_then_done)
     captured_messages: List[List[Dict[str, Any]]] = []
@@ -132,6 +133,7 @@ def test_approval_rejected_skips_tool_and_feeds_denied(monkeypatch):
     assert out == "ok, skipping"
     assert write_tool.run_calls == []  # 工具没被执行
     # 严格断言:第二次 LLM 调用收到的 messages 里有 denied tool_result
+    assert len(agent._captured_messages) >= 2, "agent 应至少调用 LLM 两次"
     second_call_msgs = agent._captured_messages[1]
     denied = [m for m in second_call_msgs
               if m.get("role") == "tool" and "拒绝" in (m.get("content") or "")]
