@@ -82,6 +82,19 @@ def _result_dot_color(text: str) -> str:
     return theme.DIM
 
 
+def _continuation_lines(text: str, color: str) -> Text:
+    """上一步 ⏺ 的续行 —— 用 '  ⎿  ' 连接符,跟 Claude Code 一致。
+    一次工具调用 = 一个 ⏺ tool_notice + 缩进的 ⎿ tool_result。"""
+    out = Text()
+    for i, line in enumerate(text.split("\n")):
+        if i == 0:
+            out.append("  ⎿  ", style=color)
+        else:
+            out.append("\n     ")
+        out.append(line, style=color if i == 0 else "")
+    return out
+
+
 def render_user(console: Console, text: str) -> None:
     """Echo the user's input with cyan bar + role label."""
     console.print()
@@ -187,10 +200,11 @@ class StreamingAgentRenderer:
                 body = name if not preview else f"{name}({preview})"
                 renderables.append(_step_lines(body, theme.DIM, from_ansi=False))
             elif kind == "tool_result":
-                # tool_result = ⏺ 颜色看结果首字符:✅=绿 / ❌/拒绝=红 / 其它=DIM
+                # tool_result 是上一步 (tool_notice) 的续行 —— 用 ⎿ 连接,
+                # 不再起一个新 ⏺,避免一次工具调用看着像两个 step
                 text_line = seg[1]
                 color = _result_dot_color(text_line)
-                renderables.append(_step_lines(text_line, color, from_ansi=False))
+                renderables.append(_continuation_lines(text_line, color))
 
         if not renderables:
             return Text("")
