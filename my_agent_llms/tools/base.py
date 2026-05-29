@@ -16,6 +16,8 @@ class ToolParameter(BaseModel):
 class Tool(ABC):
     """工具基类"""
 
+    requires_approval: bool = False
+
     def __init__(self, name: str, description: str):
         self.name = name
         self.description = description
@@ -29,6 +31,11 @@ class Tool(ABC):
     def get_parameters(self) -> List[ToolParameter]:
         """获取工具参数定义"""
         pass
+
+    def preview_for_approval(self, parameters: Dict[str, Any]) -> str:
+        """生成给审批 UI 看的预览文本。默认 = repr(args)。
+        写类工具应覆盖成 diff 字符串。"""
+        return repr(parameters)
 
     def to_openai_schema(self) -> Dict[str, Any]:
         """转换为 OpenAI function calling schema。"""
