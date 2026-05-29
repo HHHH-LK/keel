@@ -18,8 +18,36 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
+from rich.theme import Theme
 
 from . import theme
+
+
+# Claude Code 风格的极简 markdown 主题 —— 覆盖 rich.Markdown 那一套
+# "花花绿绿"(彩色 header / 彩色 bullet / 彩色 hr / 彩色 code 背景)。
+# 留 bold / italic / 轻量 inline code 即可,其它 default 终端色。
+_MINIMAL_MD_THEME = Theme({
+    "markdown.paragraph":   "",
+    "markdown.text":        "",
+    "markdown.em":          "italic",
+    "markdown.strong":      "bold",
+    "markdown.code":        "dim bold",        # 行内 code,轻量
+    "markdown.code_block":  "dim",
+    "markdown.block_quote": "dim",
+    "markdown.list":        "",
+    "markdown.item":        "",
+    "markdown.item.bullet": "",
+    "markdown.item.number": "",
+    "markdown.h1":          "bold",
+    "markdown.h2":          "bold",
+    "markdown.h3":          "bold",
+    "markdown.h4":          "bold",
+    "markdown.h5":          "bold",
+    "markdown.h6":          "bold",
+    "markdown.hr":          "dim",
+    "markdown.link":        "underline",
+    "markdown.link_url":    "dim underline",
+})
 
 
 def _now_hhmm() -> str:
@@ -208,9 +236,19 @@ def render_user(console: Console, text: str) -> None:
 
 def render_agent(console: Console, reply: str, *,
                  tools_used: int = 0, elapsed_seconds: float = 0.0) -> None:
-    """Render an AI reply: ⏺ + plain text body (Claude Code 风格,不渲 markdown)。"""
+    """Render an AI reply: ⏺ + minimal markdown body (Claude Code 风格)。"""
     console.print()
-    console.print(_step_lines(reply, theme.DEFAULT, from_ansi=False))
+    buf = io.StringIO()
+    sub = Console(
+        file=buf,
+        force_terminal=True,
+        color_system="truecolor",
+        width=max(40, console.width - 4),
+        theme=_MINIMAL_MD_THEME,
+    )
+    sub.print(Markdown(reply))
+    ansi = buf.getvalue().rstrip("\n")
+    console.print(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
 
 
 def render_agent_error(console: Console, message: str) -> None:
@@ -265,20 +303,18 @@ class StreamingAgentRenderer:
                 content = seg[1]
                 if not content:
                     continue
-                # 普通回答 = 白色 ⏺(theme.DEFAULT 走终端默认前景色)
-                if markdown:
-                    buf = io.StringIO()
-                    sub = Console(
-                        file=buf,
-                        force_terminal=True,
-                        color_system="truecolor",
-                        width=max(40, self.console.width - 4),
-                    )
-                    sub.print(Markdown(content))
-                    ansi = buf.getvalue().rstrip("\n")
-                    renderables.append(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
-                else:
-                    renderables.append(_step_lines(content, theme.DEFAULT, from_ansi=False))
+                # 普通回答 —— 实时 markdown 渲染 (Claude Code 风格,minimal theme)
+                buf = io.StringIO()
+                sub = Console(
+                    file=buf,
+                    force_terminal=True,
+                    color_system="truecolor",
+                    width=max(40, self.console.width - 4),
+                    theme=_MINIMAL_MD_THEME,
+                )
+                sub.print(Markdown(content))
+                ansi = buf.getvalue().rstrip("\n")
+                renderables.append(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
             elif kind == "tool":
                 # tool_notice (即将调用) = DIM ⏺,只是 "我要做 X" 的预告
                 name = seg[1]
