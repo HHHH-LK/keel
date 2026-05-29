@@ -21,8 +21,10 @@ logger = logging.getLogger(__name__)
 # 流式回调签名:
 # - on_text_chunk(text): 模型每吐一段可见 content 时调用一次
 # - on_tool_call(name, args_dict): 工具调用即将执行时调用一次
+# - on_permission_request(name, args_dict, preview) → bool: 需审批工具执行前询问用户
 TextChunkCallback = Callable[[str], None]
 ToolCallCallback = Callable[[str, Dict[str, Any]], None]
+PermissionCallback = Callable[[str, Dict[str, Any], str], bool]
 
 
 class MyFunctionCallAgent(Agent):
@@ -51,6 +53,7 @@ class MyFunctionCallAgent(Agent):
             tool_choice: Union[str, dict] = "auto",
             on_text_chunk: Optional[TextChunkCallback] = None,
             on_tool_call: Optional[ToolCallCallback] = None,
+            on_permission_request: Optional[PermissionCallback] = None,
             **kwargs) -> str:
         """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。"""
         system_prompt = self._apply_honesty_contract(self.system_prompt)
@@ -102,6 +105,31 @@ class MyFunctionCallAgent(Agent):
                         on_tool_call(tool_name, args)
                     except Exception:
                         logger.exception("on_tool_call 回调异常,忽略不影响主流程")
+
+                # ── 审批检查:仅当工具声明 requires_approval 且 chat 层传了 callback ──
+                tool_obj = self.tool_registry.get_tool(tool_name)
+                if (tool_obj is not None
+                        and getattr(tool_obj, "requires_approval", False)
+                        and on_permission_request is not None):
+                    try:
+                        preview = tool_obj.preview_for_approval(args)
+                    except Exception:
+                        logger.exception("preview_for_approval 异常,降级为 repr")
+                        preview = repr(args)
+                    try:
+                        allowed = on_permission_request(tool_name, args, preview)
+                    except Exception:
+                        logger.exception("on_permission_request 异常,默认拒绝")
+                        allowed = False
+                    if not allowed:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": f"用户拒绝了对 {tool_name} 的调用",
+                        })
+                        tool_call_count += 1  # 算一次"尝试"
+                        continue
+
                 tool_call_count += 1
                 result = self.tool_registry.execute_tool(tool_name, args)
                 messages.append({
