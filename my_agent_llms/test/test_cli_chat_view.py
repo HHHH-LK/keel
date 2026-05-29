@@ -26,37 +26,31 @@ def test_render_user_multiline_each_line_has_bar():
     assert len(bar_lines) >= 3
 
 
-def test_render_agent_plain_text_includes_bar_and_content():
+def test_render_agent_plain_text_uses_step_dot_and_no_header():
+    """Claude Code 风格:⏺ 开头,不再有"伙伴 · time" header。"""
     out = _capture(chat_view.render_agent, "just a plain reply",
                    tools_used=0, elapsed_seconds=1.5)
-    assert "伙伴" in out
-    assert "┃" in out
+    assert "伙伴" not in out  # header 已删
+    assert "⏺" in out          # 改成 step dot
     assert "just a plain reply" in out
 
 
-def test_render_agent_with_tools_shows_tool_count_in_header():
+def test_render_agent_does_not_show_tool_count_or_elapsed():
+    """render_agent 不再渲染 meta (tools / elapsed) —— 走 Claude Code 极简风。"""
     out = _capture(chat_view.render_agent, "ok",
                    tools_used=3, elapsed_seconds=2.3)
-    assert "3 tools" in out
+    assert "3 tools" not in out
+    assert "2.3s" not in out
 
 
-def test_render_agent_no_tools_omits_tool_count():
-    out = _capture(chat_view.render_agent, "ok",
-                   tools_used=0, elapsed_seconds=1.0)
-    assert "tools" not in out
-
-
-def test_render_agent_markdown_renders_list_and_keeps_bar():
+def test_render_agent_markdown_renders_list_under_step_dot():
     md = "Here is a list:\n\n- item one\n- item two\n"
     out = _capture(chat_view.render_agent, md, tools_used=0, elapsed_seconds=0.1)
     assert "item one" in out
     assert "item two" in out
-    content_lines = [
-        line for line in out.splitlines()
-        if line.strip() and "伙伴" not in line and "─" not in line
-        and "item" in line
-    ]
-    assert all("┃" in line for line in content_lines), out
+    # 整段只起一个 ⏺,续行缩进(没有每行 ┃ bar)
+    assert out.count("⏺") == 1
+    assert "┃" not in out
 
 
 def test_render_agent_error_uses_error_marker():

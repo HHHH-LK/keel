@@ -197,17 +197,9 @@ def render_user(console: Console, text: str) -> None:
 
 def render_agent(console: Console, reply: str, *,
                  tools_used: int = 0, elapsed_seconds: float = 0.0) -> None:
-    """Render an AI reply: header + markdown body with magenta bar."""
-    parts: list[str] = []
-    if tools_used > 0:
-        parts.append(f"{tools_used} tools")
-    parts.append(f"{elapsed_seconds:.1f}s")
-    meta = "  ·  ".join(parts)
-
+    """Render an AI reply: ⏺ + markdown body (Claude Code 风格,无 header)。"""
     console.print()
-    _header(console, "伙伴", theme.AGENT, meta=meta)
-
-    # Render markdown to ANSI in a sub-console, then prefix each line.
+    # Render markdown to ANSI in a sub-console, then prefix with ⏺
     buf = io.StringIO()
     sub = Console(
         file=buf,
@@ -217,7 +209,7 @@ def render_agent(console: Console, reply: str, *,
     )
     sub.print(Markdown(reply))
     ansi = buf.getvalue().rstrip("\n")
-    console.print(_bar_lines(ansi, theme.AGENT, from_ansi=True))
+    console.print(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
 
 
 def render_agent_error(console: Console, message: str) -> None:
@@ -317,9 +309,8 @@ class StreamingAgentRenderer:
         if self._opened:
             return
         self._opened = True
-        # header 落进 scrollback,Live 只接管它下面的 body 区域
+        # Claude Code 风格:不打 "伙伴 · 16:28" header,只留一空行作分隔
         self.console.print()
-        _header(self.console, self.role, self.role_color)
         self._live = Live(
             self._render_body(markdown=False),
             console=self.console,
