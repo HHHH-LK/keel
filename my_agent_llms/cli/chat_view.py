@@ -208,19 +208,9 @@ def render_user(console: Console, text: str) -> None:
 
 def render_agent(console: Console, reply: str, *,
                  tools_used: int = 0, elapsed_seconds: float = 0.0) -> None:
-    """Render an AI reply: ⏺ + markdown body (Claude Code 风格,无 header)。"""
+    """Render an AI reply: ⏺ + plain text body (Claude Code 风格,不渲 markdown)。"""
     console.print()
-    # Render markdown to ANSI in a sub-console, then prefix with ⏺
-    buf = io.StringIO()
-    sub = Console(
-        file=buf,
-        force_terminal=True,
-        color_system="truecolor",
-        width=max(40, console.width - 4),
-    )
-    sub.print(Markdown(reply))
-    ansi = buf.getvalue().rstrip("\n")
-    console.print(_step_lines(ansi, theme.DEFAULT, from_ansi=True))
+    console.print(_step_lines(reply, theme.DEFAULT, from_ansi=False))
 
 
 def render_agent_error(console: Console, message: str) -> None:
@@ -407,8 +397,10 @@ class StreamingAgentRenderer:
         if not self._opened:
             return
         if self._live is not None:
-            # 关键一步:最后一次 update 用 markdown 版本,stop 后这版本留在屏上
-            self._live.update(self._render_body(markdown=True))
+            # Claude Code 风格:保留 plain text,不 swap 成 rich.Markdown
+            # (rich.Markdown 会把 --- 渲染成横线、### 加大加色、- 换成 •,
+            #  整体过于花哨;我们让 markdown 源直接展示,跟 Claude Code 一致)
+            self._live.update(self._render_body(markdown=False))
             self._live.stop()
             self._live = None
 
