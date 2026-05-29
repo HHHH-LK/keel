@@ -44,3 +44,6 @@ htmlcov/
 
 # ---- Project docs (local only) ----
 docs/
+
+# ---- Git worktrees (local feature branches) ----
+.worktrees/
