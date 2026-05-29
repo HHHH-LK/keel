@@ -32,6 +32,7 @@ from prompt_toolkit.shortcuts import radiolist_dialog
 from rich.prompt import Prompt
 
 from my_agent_llms.cli import banner, chat_view, help_view, status_bar, theme
+from my_agent_llms.cli.permission import prompt_permission, TerminalNotInteractiveError
 from my_agent_llms.cli.console import console
 from my_agent_llms.cli.prompt import build_session, prompt_html
 
@@ -187,7 +188,6 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
 
     # ── Doc Editor: 沙箱 + 6 个文件工具 ────────────────────
     from my_agent_llms.workspace import Workspace
-    from my_agent_llms.tools.builtin.pending_edits import PendingEditStore
     from my_agent_llms.tools.builtin.read_file import ReadFile
     from my_agent_llms.tools.builtin.edit_file import EditFile
     from my_agent_llms.tools.builtin.write_file import WriteFile
@@ -202,17 +202,16 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
         help_view.print_error(console, f"Workspace 初始化失败: {exc}")
         return None
     console.print(f"[dim]Workspace: {ws.root}[/dim]")
-    pe_store = PendingEditStore()
 
     registry = ToolRegistry()
     registry.register_tool(CalculatorTool())
     registry.register_tool(ReadFile(ws))
-    registry.register_tool(EditFile(ws, pe_store))
-    registry.register_tool(WriteFile(ws, pe_store))
+    registry.register_tool(EditFile(ws))
+    registry.register_tool(WriteFile(ws))
     registry.register_tool(ListDir(ws))
     registry.register_tool(AttachFile(ws))
     registry.register_tool(AttachDir(ws))
-    registry.register_tool(ExportFile(ws, pe_store))
+    registry.register_tool(ExportFile(ws))
 
     try:
         agent = MyFunctionCallAgent(
@@ -231,9 +230,11 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 "     (自动跳过 .git/.venv/node_modules/__pycache__/二进制等,"
                 "      返回值会附带文件清单,无需再额外 ListDir)\n"
                 "2. sandbox 内用 ReadFile / EditFile / WriteFile / ListDir 操作\n"
-                "3. EditFile / WriteFile 是两步: 第一次调用返回 [待确认] pending_id + diff;"
-                "   用户明确说'确认'后,再用 pending_id + action=apply 落盘\n"
-                "4. 写回原位置用 ExportFile (同样两步 + diff vs 原文件)。sandbox 内新建的文件 ExportFile 时必须给 dest_path\n"
+                "3. 写类工具(EditFile / WriteFile / ExportFile)调用时框架会同步弹"
+                "审批框给用户。你不用再追问'要不要确认',直接调即可。"
+                "用户若拒绝,你会收到 \"用户拒绝了对 X 的调用\",请结合上下文"
+                "道歉/改方案/继续聊。\n"
+                "4. ExportFile 写回原位置;sandbox 内新建的文件 ExportFile 时必须给 dest_path\n"
             ),
             memory_config=memory_config,
             max_steps=50,
@@ -791,9 +792,9 @@ class ChatCLI:
             return
 
         start = time.monotonic()
-        renderer = chat_view.StreamingAgentRenderer(console)
+        # 用 slot 装 renderer 让 callback 可以重置它
+        renderer_slot = {"current": chat_view.StreamingAgentRenderer(console)}
 
-        # 状态指示器:只在"还没拿到第一段输出"期间显示,首个 chunk/tool 一到就收
         status = console.status(
             f"[{theme.AGENT}]伙伴[/] [{theme.DIM}]·  thinking…[/]",
             spinner="dots",
@@ -809,22 +810,38 @@ class ChatCLI:
 
         def _on_chunk(text: str) -> None:
             _stop_status_once()
-            renderer.text_chunk(text)
+            renderer_slot["current"].text_chunk(text)
 
         def _on_tool(name: str, args: Dict) -> None:
             _stop_status_once()
-            renderer.tool_notice(name, _preview_tool_args(args))
+            renderer_slot["current"].tool_notice(name, _preview_tool_args(args))
+
+        def _on_permission_request(name: str, args: Dict, preview: str) -> bool:
+            _stop_status_once()
+            cur = renderer_slot["current"]
+            if cur.has_output:
+                cur.close()
+            try:
+                ok = prompt_permission(name, args, preview)
+            except TerminalNotInteractiveError:
+                console.print("[yellow]⚠ 非交互终端,自动拒绝[/yellow]")
+                ok = False
+            # 重置 renderer 让后续 chunk 进新 region
+            renderer_slot["current"] = chat_view.StreamingAgentRenderer(console)
+            return ok
 
         try:
             response = self.agent.run(
                 user_input,
                 on_text_chunk=_on_chunk,
                 on_tool_call=_on_tool,
+                on_permission_request=_on_permission_request,
             )
         except Exception as exc:
             _stop_status_once()
-            if renderer.has_output:
-                renderer.close()  # 先收尾再吐错,UI 不串行
+            cur = renderer_slot["current"]
+            if cur.has_output:
+                cur.close()
             chat_view.render_agent_error(console, str(exc))
             return
         finally:
@@ -833,8 +850,9 @@ class ChatCLI:
         elapsed = time.monotonic() - start
         tools_used = getattr(self.agent, "last_tool_call_count", 0)
 
-        if renderer.has_output:
-            renderer.close(tools_used=tools_used, elapsed_seconds=elapsed)
+        final_renderer = renderer_slot["current"]
+        if final_renderer.has_output:
+            final_renderer.close(tools_used=tools_used, elapsed_seconds=elapsed)
         else:
             # 流式期间一字未出 (比如 _extract_message_content 走 reasoning 兜底
             # 返回字符串,但 stream 阶段 content 通道全空) → 回退到全文 markdown 渲染
