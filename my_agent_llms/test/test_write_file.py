@@ -59,11 +59,16 @@ def test_preview_existing_file_returns_diff(tmp_path):
     assert "+new" in preview
 
 
-def test_preview_new_file_shows_byte_count(tmp_path):
+def test_preview_new_file_shows_full_content_as_diff(tmp_path):
+    """新建文件:像 Claude Code 那样,展示要写入的实际内容(全 + 行 diff)。"""
     tool, _ = _make_tool(tmp_path)
-    preview = tool.preview_for_approval({"path": "new.md", "content": "hi\n"})
+    preview = tool.preview_for_approval(
+        {"path": "new.md", "content": "line one\nline two\n"}
+    )
     assert "new.md" in preview
-    assert "字节" in preview or "byte" in preview.lower() or "新建" in preview
+    assert "---" in preview and "+++" in preview  # unified diff header
+    assert "+line one" in preview
+    assert "+line two" in preview
 
 
 def test_run_uses_atomic_write(tmp_path):

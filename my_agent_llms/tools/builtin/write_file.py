@@ -79,7 +79,9 @@ class WriteFile(Tool):
             if old == new_content:
                 return "(新内容与原文件相同)"
             return _make_diff(rel, old, new_content)
-        return f"(新建文件 {rel},{len(new_content.encode('utf-8'))} 字节)"
+        # 新建文件:用"对空文件 diff",所有行都是 + 号,UI 走 Syntax 高亮绿色
+        # 跟 Claude Code 一致,让用户直接看到要写入的内容
+        return _make_diff(rel, "", new_content)
 
     def get_parameters(self) -> List[ToolParameter]:
         return [

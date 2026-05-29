@@ -105,7 +105,8 @@ class ExportFile(Tool):
             if old == new_content:
                 return "(sandbox 内容与原目标完全一致)"
             return _make_diff(str(dest), old, new_content)
-        return f"(新建文件 {dest},{len(new_content.encode('utf-8'))} 字节)"
+        # 新建目标文件:展示完整待写入内容(全 + 行,Panel 里高亮绿色)
+        return _make_diff(str(dest), "", new_content)
 
     def get_parameters(self) -> List[ToolParameter]:
         return [

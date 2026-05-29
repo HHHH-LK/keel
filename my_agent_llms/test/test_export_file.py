@@ -64,14 +64,17 @@ def test_preview_for_existing_dest_shows_diff(tmp_path):
     assert "-old" in preview and "+new" in preview
 
 
-def test_preview_for_new_dest_shows_byte_count(tmp_path):
+def test_preview_for_new_dest_shows_full_content_as_diff(tmp_path):
+    """新建目标文件:展示要写入的完整内容(diff 格式,全 + 行)。"""
     tool, ws = _make_tool(tmp_path)
-    (ws.root / "a.md").write_text("hello\n")
+    (ws.root / "a.md").write_text("first line\nsecond line\n")
     dest = tmp_path / "out.md"  # 不存在
     preview = tool.preview_for_approval({
         "sandbox_path": "a.md", "dest_path": str(dest)
     })
-    assert "新建" in preview or "字节" in preview
+    assert "---" in preview and "+++" in preview
+    assert "+first line" in preview
+    assert "+second line" in preview
 
 
 def test_export_uses_atomic_write(tmp_path):
