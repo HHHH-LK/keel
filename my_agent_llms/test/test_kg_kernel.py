@@ -137,3 +137,34 @@ def test_entity_split_no_longer_causes_false_supersede():
     superseded = d.apply_extracted_relations([_rel("user", "喜欢", "python")], source_item_id="i2")
     assert superseded == []                 # 同一实体,且'喜欢'多值 → 不取代
     assert _active_objects(d) == {"Python"}  # 归一成一个
+
+
+# ─────────────────────────────────────────────
+# Task 1.4: scope 归一化(治 scope 漂移漏判)
+# ─────────────────────────────────────────────
+
+def test_normalize_scope_maps_synonym():
+    """同义 scope 归一:上班→工作。"""
+    assert kg_vocab.normalize_scope("上班") == "工作"
+
+
+def test_normalize_scope_empty_stays_empty():
+    """空 scope 保持空(无场景约束)。"""
+    assert kg_vocab.normalize_scope("") == ""
+
+
+def test_scope_synonym_triggers_conflict():
+    """scope 同义归一后,同场景的单值冲突能触发(工作/上班 视为同场景)。"""
+    d = _detector()
+    d.apply_extracted_relations([_rel("user", "主力语言", "Java", scope="工作")], source_item_id="i1")
+    superseded = d.apply_extracted_relations([_rel("user", "主力语言", "Go", scope="上班")], source_item_id="i2")
+    assert "i1" in superseded               # 工作==上班 同场景 → 取代
+
+
+def test_different_scope_coexist():
+    """不同场景不冲突:工作 vs 业余 共存。"""
+    d = _detector()
+    d.apply_extracted_relations([_rel("user", "主力语言", "Java", scope="工作")], source_item_id="i1")
+    superseded = d.apply_extracted_relations([_rel("user", "主力语言", "Python", scope="业余")], source_item_id="i2")
+    assert superseded == []
+    assert _active_objects(d) == {"Java", "Python"}

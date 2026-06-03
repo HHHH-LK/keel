@@ -23,7 +23,11 @@ from typing import Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from my_agent_llms.memory.conflict import ConflictDetector
 from my_agent_llms.memory.embeddings import _tokenize
-from my_agent_llms.memory.kg_vocab import CARDINALITY_SINGLE, normalize_predicate
+from my_agent_llms.memory.kg_vocab import (
+    CARDINALITY_SINGLE,
+    normalize_predicate,
+    normalize_scope,
+)
 
 if TYPE_CHECKING:
     from my_agent_llms.memory.item import MemoryItem
@@ -638,9 +642,9 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
             raw_predicate = rel_data.get("predicate", "")
             if not raw_predicate:
                 continue
-            # 归一谓词 → canonical + 基数;scope 仍原样(scope 归一在 Task 1.4)
+            # 归一谓词 → canonical + 基数;归一 scope → canonical
             predicate, cardinality = normalize_predicate(raw_predicate)
-            scope = rel_data.get("scope", "") or ""
+            scope = normalize_scope(rel_data.get("scope", "") or "")
 
             # 仅单值谓词做冲突取代;多值谓词只追加
             if cardinality == CARDINALITY_SINGLE:

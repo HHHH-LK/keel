@@ -55,3 +55,27 @@ def normalize_predicate(raw: str) -> Tuple[str, str]:
     if key in _REVERSE:
         return _REVERSE[key]
     return key, CARDINALITY_MULTI
+
+
+# ── scope(场景)受控词表 ────────────────────────────────────
+# scope 同样是 LLM 自由推断的,不归一会"工作"/"上班"漂移 → 同场景冲突漏判。
+# canonical -> [synonyms]
+_SCOPES: Dict[str, list] = {
+    "工作": ["上班", "工作场景", "职场", "公司", "办公"],
+    "业余": ["私下", "个人", "闲暇", "生活", "日常"],
+    "学习": ["学校", "上学", "学业"],
+}
+
+_SCOPE_REVERSE: Dict[str, str] = {}
+for _canon, _syns in _SCOPES.items():
+    _SCOPE_REVERSE[_canon] = _canon
+    for _s in _syns:
+        _SCOPE_REVERSE[_s] = _canon
+
+
+def normalize_scope(raw: str) -> str:
+    """原始 scope → canonical。空保持空;未知原样返回(去空白)。"""
+    key = (raw or "").strip()
+    if not key:
+        return ""
+    return _SCOPE_REVERSE.get(key, key)
