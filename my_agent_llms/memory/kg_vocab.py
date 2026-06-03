@@ -79,3 +79,19 @@ def normalize_scope(raw: str) -> str:
     if not key:
         return ""
     return _SCOPE_REVERSE.get(key, key)
+
+
+# ── 来源权威等级 ────────────────────────────────────────────
+# 谁能取代谁:低权威的事实不能 supersede 高权威的事实(防 LLM 推断抹掉用户硬约束)。
+_AUTHORITY: Dict[str, int] = {
+    "user_explicit": 3,   # 用户显式声明 / /remember
+    "user_stated": 2,     # 用户对话中陈述
+    "tool": 1,            # 工具/外部结果
+    "inferred": 0,        # LLM 推断 / assistant 自述
+}
+DEFAULT_SOURCE_TYPE = "user_stated"
+
+
+def authority_of(source_type: str) -> int:
+    """source_type → 权威等级整数。未知来源按最低(0)处理。"""
+    return _AUTHORITY.get(source_type or "", 0)

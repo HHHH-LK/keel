@@ -25,6 +25,8 @@ from my_agent_llms.memory.conflict import ConflictDetector
 from my_agent_llms.memory.embeddings import _tokenize
 from my_agent_llms.memory.kg_vocab import (
     CARDINALITY_SINGLE,
+    DEFAULT_SOURCE_TYPE,
+    authority_of,
     normalize_predicate,
     normalize_scope,
 )
@@ -54,6 +56,8 @@ class Relation:
     valid_until: Optional[datetime] = None
     source_item_id: Optional[str] = None
     confidence: float = 1.0
+    source_type: str = "user_stated"   # user_explicit / user_stated / tool / inferred
+    authority: int = 2                  # 由 source_type 推出,决定谁能取代谁
 
 
 # ── 混合检索工具:RRF + 余弦 ────────────────────────────────
@@ -126,6 +130,8 @@ CREATE TABLE IF NOT EXISTS kg_relations (
     valid_until     TEXT,
     source_item_id  TEXT,
     confidence      REAL DEFAULT 1.0,
+    source_type     TEXT DEFAULT 'user_stated',
+    authority       INTEGER DEFAULT 2,
     FOREIGN KEY (subject_id) REFERENCES kg_entities(id),
     FOREIGN KEY (object_id)  REFERENCES kg_entities(id)
 );
@@ -197,7 +203,10 @@ class KGStore:
     # ── 关系 ────────────────────────────────────────────────
     def add_relation(self, rel: Relation) -> None:
         self.conn.execute(
-            "INSERT INTO kg_relations VALUES (?,?,?,?,?,?,?,?,?)",
+            """INSERT INTO kg_relations
+               (id, subject_id, predicate, object_id, scope, valid_from,
+                valid_until, source_item_id, confidence, source_type, authority)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rel.id,
                 rel.subject_id,
@@ -208,6 +217,8 @@ class KGStore:
                 rel.valid_until.isoformat() if rel.valid_until else None,
                 rel.source_item_id,
                 rel.confidence,
+                rel.source_type,
+                rel.authority,
             ),
         )
         self.conn.commit()
@@ -357,6 +368,7 @@ class KGStore:
         return [self._row_to_relation(r) for r in rows]
 
     def _row_to_relation(self, row) -> Relation:
+        keys = row.keys()
         return Relation(
             id=row["id"],
             subject_id=row["subject_id"],
@@ -367,6 +379,9 @@ class KGStore:
             valid_until=datetime.fromisoformat(row["valid_until"]) if row["valid_until"] else None,
             source_item_id=row["source_item_id"],
             confidence=row["confidence"] or 1.0,
+            # 兼容旧库(无这两列时取默认)
+            source_type=row["source_type"] if "source_type" in keys else "user_stated",
+            authority=row["authority"] if "authority" in keys and row["authority"] is not None else 2,
         )
 
 
@@ -613,9 +628,10 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         relations_data: list,
         source_item_id: Optional[str],
         *,
+        source_type: str = DEFAULT_SOURCE_TYPE,
         now: Optional[datetime] = None,
     ) -> List[str]:
-        """把已抽取的关系做归一化 + 基数判定 + 冲突处置,入库。
+        """把已抽取的关系做归一化 + 基数判定 + 权威闸门 + 冲突处置,入库。
 
         与 find_superseded 分离 —— 这一段是纯确定性逻辑(不碰 LLM/manager),
         便于单测。返回被取代的旧 MemoryItem ID 列表。
@@ -623,8 +639,12 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         基数门控(安全关键):
         - 单值谓词(现居地/主力语言…)→ 新值取代同 (subject, 谓词, scope) 的旧值
         - 多值谓词(过敏/会…)→ 只追加,绝不取代(否则"对花生过敏"会被"对牛奶过敏"删掉)
+
+        权威闸门(安全关键):
+        - 低权威(LLM 推断)不能 supersede 高权威(用户显式)的事实
         """
         now = now or datetime.now()
+        new_authority = authority_of(source_type)
         superseded_item_ids: set = set()
 
         for rel_data in relations_data:
@@ -656,6 +676,9 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
                     at_time=now,
                 )
                 for old_rel in conflicts:
+                    # 权威闸门:低权威不能取代高权威(防 LLM 推断抹掉用户硬约束)
+                    if new_authority < old_rel.authority:
+                        continue
                     self.store.supersede_relation(old_rel.id, now)
                     if old_rel.source_item_id:
                         superseded_item_ids.add(old_rel.source_item_id)
@@ -669,6 +692,8 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
                 valid_from=now,
                 source_item_id=source_item_id,
                 confidence=1.0,
+                source_type=source_type,
+                authority=new_authority,
             )
             self.store.add_relation(new_rel)
 

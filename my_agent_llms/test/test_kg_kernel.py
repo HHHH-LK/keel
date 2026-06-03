@@ -168,3 +168,36 @@ def test_different_scope_coexist():
     superseded = d.apply_extracted_relations([_rel("user", "主力语言", "Python", scope="业余")], source_item_id="i2")
     assert superseded == []
     assert _active_objects(d) == {"Java", "Python"}
+
+
+# ─────────────────────────────────────────────
+# Task 1.5: 权威闸门(低不盖高,防抹用户硬约束)
+# ─────────────────────────────────────────────
+
+def test_authority_user_explicit_outranks_inferred():
+    assert kg_vocab.authority_of("user_explicit") > kg_vocab.authority_of("inferred")
+
+
+def test_low_authority_cannot_supersede_high():
+    """LLM 推断(低权威)不能取代用户显式(高权威)的单值事实。"""
+    d = _detector()
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "北京")], source_item_id="i1", source_type="user_explicit",
+    )
+    superseded = d.apply_extracted_relations(
+        [_rel("user", "住在", "上海")], source_item_id="i2", source_type="inferred",
+    )
+    assert superseded == []                 # 没取代
+    assert "北京" in _active_objects(d)      # 用户显式的硬事实还在
+
+
+def test_equal_or_higher_authority_can_supersede():
+    """同等/更高权威可以正常取代。"""
+    d = _detector()
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "北京")], source_item_id="i1", source_type="user_stated",
+    )
+    superseded = d.apply_extracted_relations(
+        [_rel("user", "住在", "上海")], source_item_id="i2", source_type="user_explicit",
+    )
+    assert "i1" in superseded
