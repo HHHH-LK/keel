@@ -467,6 +467,27 @@ class KGStore:
         )
         self.conn.commit()
 
+    def correct_relation(self, rel_id: str, now: Optional[datetime] = None) -> None:
+        """CORRECT(抽错了):该事实从未为真,撤回信念。
+
+        与 SUPERSEDE 的本质区别(bi-temporal):
+        - SUPERSEDE 改 T:关事件区间在'世界变化时刻',旧事实保留为历史,过去时间点仍可查到。
+        - CORRECT 改 T':把事件区间清成空(valid_until=valid_from),expired_at=now。
+          → 任何事件时间点查询都不再返回它(因为它从来没'真'过),但记录仍在(可审计)。
+        """
+        now = now or datetime.now()
+        row = self.conn.execute(
+            "SELECT valid_from FROM kg_relations WHERE id=?", (rel_id,)
+        ).fetchone()
+        if row is None:
+            return
+        self.conn.execute(
+            "UPDATE kg_relations SET valid_until=?, expired_at=? WHERE id=?",
+            (row["valid_from"], now.isoformat(), rel_id),   # 事件区间清空
+        )
+        self.conn.commit()
+        self.log_audit("correct", "relation", rel_id, reason="抽取错误:从未为真", at_time=now)
+
     def find_active_relations_for_entity(
         self,
         entity_name: str,

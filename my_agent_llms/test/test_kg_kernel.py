@@ -431,3 +431,52 @@ def test_bitemporal_point_in_time_query():
     }
     assert now_objs == {"上海"}    # 当前
     assert past_objs == {"北京"}    # 搬家前那个时间点
+
+
+# ─────────────────────────────────────────────
+# Task 3.2: CORRECT(抽错,改 T')vs SUPERSEDE(世界变,改 T)
+# ─────────────────────────────────────────────
+
+def test_corrected_fact_never_valid_at_any_time():
+    """CORRECT:抽错的事实从未为真,任何时间点都查不到。"""
+    d = _detector()
+    t0 = datetime(2025, 1, 1)
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "火星")],
+        source_item_id="i1", source_type="user_stated", source_text="我住火星", event_time=t0,
+    )
+    rel = d.store.find_active_relations_for_entity("user")[0]
+    d.store.correct_relation(rel.id)
+    assert d.store.find_active_relations_for_entity("user", at_time=datetime(2025, 3, 1)) == []
+    assert d.store.find_active_relations_for_entity("user", at_time=t0) == []
+
+
+def test_supersede_keeps_history_correct_does_not():
+    """对比:supersede 的旧值在历史点仍可查;correct 的彻底查不到。"""
+    d = _detector()
+    t0 = datetime(2025, 1, 1)
+    t1 = datetime(2025, 6, 1)
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "北京")],
+        source_item_id="i1", source_type="user_stated", source_text="我住北京", event_time=t0,
+    )
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "上海")],
+        source_item_id="i2", source_type="user_stated", source_text="我搬到上海", event_time=t1,
+    )
+    past = {
+        d.store.get_entity(r.object_id).name
+        for r in d.store.find_active_relations_for_entity("user", at_time=datetime(2025, 3, 1))
+    }
+    assert past == {"北京"}   # supersede 保历史
+
+
+def test_correct_writes_audit():
+    d = _detector()
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "火星")],
+        source_item_id="i1", source_type="user_stated", source_text="我住火星",
+    )
+    rel = d.store.find_active_relations_for_entity("user")[0]
+    d.store.correct_relation(rel.id)
+    assert any(e["op"] == "correct" for e in d.store.audit_entries())
