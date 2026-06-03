@@ -120,19 +120,23 @@ class Agent(ABC):
 
     # ── Memory 相关工具的自动注册 ──────────────────────────
     def _install_memory_tools(self, tool_registry) -> None:
-        """带工具的子类在 __init__ 末尾调用：把 RecallTool 装到 registry。
+        """带工具的子类在 __init__ 末尾调用：把 recall / remember 装到 registry。
 
-        LLM 通过 registry 的 tool description 路径就能看见 recall —— 不需要
+        LLM 通过 registry 的 tool description 路径就能看见这两个工具 —— 不需要
         在 system prompt 里特别说明（CalculatorTool / SearchTool 也是同一机制）。
+        recall 是 page in（读长期记忆），remember 是主动落盘（写 L0）。
         """
         if tool_registry is None:
             return
         # 延迟导入避免 core 反向依赖 tools
         from my_agent_llms.tools.builtin.recall import RecallTool
+        from my_agent_llms.tools.builtin.remember import RememberTool
 
-        if "recall" in tool_registry.list_tools():
-            return
-        tool_registry.register_tool(RecallTool(self.memory))
+        installed = tool_registry.list_tools()
+        if "recall" not in installed:
+            tool_registry.register_tool(RecallTool(self.memory))
+        if "remember" not in installed:
+            tool_registry.register_tool(RememberTool(self.memory))
 
     def __str__(self) -> str:
         return f"Agent(name={self.name}, provider={self.llm.provider})"

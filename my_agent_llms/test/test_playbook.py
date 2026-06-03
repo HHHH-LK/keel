@@ -285,7 +285,7 @@ def test_state_card_archived_on_negate():
     card = PlaybookCard(
         content="用户最近在做 X 项目",
         type=L0Type.STATE,
-        source=L0Source.KG_PROMOTED,
+        source=L0Source.SEED_PROMOTED,
         source_ref="dummy_item_id",
         confidence=0.7,
     )

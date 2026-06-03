@@ -30,6 +30,9 @@ class MemoryConfig(BaseModel):
     promote_threshold: float = 0.7
     demote_threshold: float = 0.3
     promote_min_hits: int = 3
+    # L0 实绩毕业: L1 项 pinned 且访问达此次数 → 晋升为 L0 卡(L1_GRADUATED)。
+    # 比 promote_min_hits 高一档,因为 L0 是跨会话的更高门槛。
+    l0_graduate_min_hits: int = 5
     decay_tau_days: float = 7.0
     # importance 公式四因子权重(总和 = 1.0,保持 importance ∈ [0, 1])
     w_access: float = 0.3

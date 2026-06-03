@@ -30,6 +30,7 @@ class L0Lifecycle(str, Enum):
 
 class L0Source(str, Enum):
     USER_EXPLICIT = "user_explicit"     # /remember 命令
+    SEED_PROMOTED = "seed_promoted"     # 写入瞬间种子分(关键词启发式)晋升
     KG_PROMOTED = "kg_promoted"         # KG detector 抽出事实
     L1_GRADUATED = "l1_graduated"       # L1 长期 pinned 晋升
     LLM_REMEMBERED = "llm_remembered"   # LLM 主动调 remember 工具(强模型)

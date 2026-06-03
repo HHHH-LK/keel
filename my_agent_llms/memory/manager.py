@@ -276,11 +276,60 @@ class MemoryManager:
         card = PlaybookCard(
             content=item.content,
             type=classify_content_type(item.content),
-            source=L0Source.KG_PROMOTED,
+            source=L0Source.SEED_PROMOTED,
             source_ref=item.id,
             confidence=min(1.0, 0.7 + 0.3 * item.prior_score),
         )
         self.playbook.add(card)
+
+    def _maybe_graduate_to_l0(self) -> List[str]:
+        """实绩毕业: L1 里 pinned 且反复被访问的用户消息晋升为 L0 卡片。
+
+        与 _maybe_promote_to_l0 的区别 ——
+        - 写入晋升 = "预测": 靠关键词种子分,一进 L1 就判定重要。
+        - 实绩毕业 = "证据": 靠 pinned + access_count,久经考验才毕业。
+          覆盖那些没命中关键词、但被反复召回证明了价值的项。
+
+        触发条件:
+        - role == 'user'(assistant 自述不毕业)
+        - item.pinned 且 access_count >= l0_graduate_min_hits
+        - 该 item 尚未产生过任何 L0 卡(source_ref 去重,避免重复毕业)
+        - 内容未在活跃 L0 中重复
+        """
+        graduated: List[str] = []
+        threshold = self.config.l0_graduate_min_hits
+        # 候选通常只有少数几条 pinned 项,但 all_active 每次查库,先过滤再查
+        candidates = [
+            item for item in self.working.items()
+            if item.role == "user"
+            and item.is_active
+            and item.pinned
+            and item.access_count >= threshold
+        ]
+        if not candidates:
+            return graduated
+        active_contents = {c.content for c in self.playbook.all_active()}
+        for item in candidates:
+            # source_ref 去重: 查所有生命周期(含 archived/forgotten)。
+            # 故意不只查 active —— forgotten 卡也要挡住重新毕业,
+            # 否则用户 /forget 后,仍在 L1 的高热项会被一次次复活,违背用户意图。
+            # (被 supersede 的项已被上面的 is_active 过滤,不会走到这。)
+            if self.playbook.find_by_source_ref(item.id):
+                continue
+            # 内容去重: 不同 item 但同文本已在 L0
+            if item.content in active_contents:
+                continue
+            card = PlaybookCard(
+                content=item.content,
+                type=classify_content_type(item.content),
+                source=L0Source.L1_GRADUATED,
+                source_ref=item.id,
+                confidence=0.8,
+            )
+            self.playbook.add(card)
+            active_contents.add(item.content)
+            graduated.append(item.id)
+        return graduated
 
     def _apply_conflict_detection(self, new_item: MemoryItem) -> None:
         """对新写入项做冲突检测,标记被取代的旧项。
@@ -743,7 +792,15 @@ class MemoryManager:
         if recalled:
             self._cascade_evict_from_l1()
 
-        return {"promoted": promoted, "demoted": demoted, "recalled": recalled}
+        # 实绩毕业: 久经考验的 L1 项晋升 L0(跨会话保留)
+        graduated = self._maybe_graduate_to_l0()
+
+        return {
+            "promoted": promoted,
+            "demoted": demoted,
+            "recalled": recalled,
+            "graduated": graduated,
+        }
 
     # ── 异步 tick 的辅助 API ───────────────────────────────
     def wait_for_tick(self, timeout: Optional[float] = None) -> Optional[Dict]:
