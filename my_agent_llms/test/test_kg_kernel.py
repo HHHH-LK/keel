@@ -388,3 +388,46 @@ def test_restatement_bumps_confidence():
 def test_initial_confidence_by_source():
     """初始 confidence 按来源:用户显式 > 用户陈述。"""
     assert kg_vocab.base_confidence("user_explicit") > kg_vocab.base_confidence("user_stated")
+
+
+# ─────────────────────────────────────────────
+# Task 3.1: bi-temporal —— valid_from 盖事件时间,4 时间戳
+# ─────────────────────────────────────────────
+
+def test_valid_from_uses_event_time_not_now():
+    """valid_from 盖的是事件时间(Episode 时刻),不是 worker 的 now。"""
+    d = _detector()
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "北京")],
+        source_item_id="i1", source_type="user_stated", source_text="我住北京",
+        event_time=t0,
+    )
+    rel = d.store.find_active_relations_for_entity("user")[0]
+    assert rel.valid_from == t0              # 事件时间 T
+    assert rel.created_at > rel.valid_from   # 事务时间 T' ≈ now,与事件时间分开
+
+
+def test_bitemporal_point_in_time_query():
+    """能回答'某个时间点什么为真':搬家前查到北京,搬家后查到上海。"""
+    d = _detector()
+    t0 = datetime(2025, 1, 1)   # 在北京
+    t1 = datetime(2025, 6, 1)   # 搬到上海
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "北京")],
+        source_item_id="i1", source_type="user_stated", source_text="我住北京", event_time=t0,
+    )
+    d.apply_extracted_relations(
+        [_rel("user", "住在", "上海")],
+        source_item_id="i2", source_type="user_stated", source_text="我搬到上海", event_time=t1,
+    )
+    now_objs = {
+        d.store.get_entity(r.object_id).name
+        for r in d.store.find_active_relations_for_entity("user", at_time=datetime(2025, 12, 1))
+    }
+    past_objs = {
+        d.store.get_entity(r.object_id).name
+        for r in d.store.find_active_relations_for_entity("user", at_time=datetime(2025, 3, 1))
+    }
+    assert now_objs == {"上海"}    # 当前
+    assert past_objs == {"北京"}    # 搬家前那个时间点

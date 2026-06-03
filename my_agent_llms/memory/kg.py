@@ -53,8 +53,11 @@ class Relation:
     predicate: str
     object_id: str
     scope: str = ""
-    valid_from: Optional[datetime] = None
-    valid_until: Optional[datetime] = None
+    # ── bi-temporal 双时间轴 ──
+    valid_from: Optional[datetime] = None    # T 事件时间:事实在现实世界开始为真
+    valid_until: Optional[datetime] = None   # T 事件时间:事实停止为真
+    created_at: Optional[datetime] = None    # T' 事务时间:写入系统的时刻
+    expired_at: Optional[datetime] = None    # T' 事务时间:系统标记失效的时刻
     source_item_id: Optional[str] = None
     confidence: float = 1.0
     source_type: str = "user_stated"   # user_explicit / user_stated / tool / inferred
@@ -172,6 +175,8 @@ CREATE TABLE IF NOT EXISTS kg_relations (
     scope           TEXT NOT NULL DEFAULT '',
     valid_from      TEXT NOT NULL,
     valid_until     TEXT,
+    created_at      TEXT,
+    expired_at      TEXT,
     source_item_id  TEXT,
     confidence      REAL DEFAULT 1.0,
     source_type     TEXT DEFAULT 'user_stated',
@@ -361,19 +366,23 @@ class KGStore:
 
     # ── 关系 ────────────────────────────────────────────────
     def add_relation(self, rel: Relation) -> None:
+        now = datetime.now()
         self.conn.execute(
             """INSERT INTO kg_relations
                (id, subject_id, predicate, object_id, scope, valid_from,
-                valid_until, source_item_id, confidence, source_type, authority)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                valid_until, created_at, expired_at, source_item_id, confidence,
+                source_type, authority)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rel.id,
                 rel.subject_id,
                 rel.predicate,
                 rel.object_id,
                 rel.scope or "",
-                (rel.valid_from or datetime.now()).isoformat(),
+                (rel.valid_from or now).isoformat(),                       # T 事件时间
                 rel.valid_until.isoformat() if rel.valid_until else None,
+                (rel.created_at or now).isoformat(),                       # T' 事务时间
+                rel.expired_at.isoformat() if rel.expired_at else None,
                 rel.source_item_id,
                 rel.confidence,
                 rel.source_type,
@@ -443,11 +452,18 @@ class KGStore:
             )
         self.conn.commit()
 
-    def supersede_relation(self, rel_id: str, at_time: datetime) -> None:
-        """给一个关系设 valid_until = at_time(让它失效)。"""
+    def supersede_relation(
+        self, rel_id: str, valid_until: datetime, expired_at: Optional[datetime] = None,
+    ) -> None:
+        """SUPERSEDE(世界变了):关旧事实的事件区间。
+
+        valid_until = 新事实的事件时间(T,现实中何时不再为真);
+        expired_at = 系统标记失效的时刻(T',默认 now)。
+        旧事实保留为历史,'某时间点什么为真'仍可查到它。
+        """
         self.conn.execute(
-            "UPDATE kg_relations SET valid_until=? WHERE id=?",
-            (at_time.isoformat(), rel_id),
+            "UPDATE kg_relations SET valid_until=?, expired_at=? WHERE id=?",
+            (valid_until.isoformat(), (expired_at or datetime.now()).isoformat(), rel_id),
         )
         self.conn.commit()
 
@@ -571,6 +587,10 @@ class KGStore:
             scope=row["scope"] or "",
             valid_from=datetime.fromisoformat(row["valid_from"]),
             valid_until=datetime.fromisoformat(row["valid_until"]) if row["valid_until"] else None,
+            created_at=datetime.fromisoformat(row["created_at"])
+            if "created_at" in keys and row["created_at"] else None,
+            expired_at=datetime.fromisoformat(row["expired_at"])
+            if "expired_at" in keys and row["expired_at"] else None,
             source_item_id=row["source_item_id"],
             confidence=row["confidence"] or 1.0,
             # 兼容旧库(无这两列时取默认)
@@ -824,6 +844,7 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         return self.apply_extracted_relations(
             relations_data, source_item_id=new_item.id,
             source_type=source_type, source_text=new_item.content,
+            event_time=getattr(new_item, "created_at", None),   # 盖事件时间
         )
 
     def apply_extracted_relations(
@@ -833,6 +854,7 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         *,
         source_type: str = DEFAULT_SOURCE_TYPE,
         source_text: str = "",
+        event_time: Optional[datetime] = None,
         now: Optional[datetime] = None,
     ) -> List[str]:
         """把已抽取的关系按"主图 vs pending"路由后处置。返回被取代的旧 item id。
@@ -842,9 +864,13 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         - 低权威来源(LLM 推断)→ pending(inferred),反复印证达阈值才晋升主图
         - 用户级 + grounded → 直写主图
 
+        bi-temporal:`event_time` 是事实的事件时间(T,Episode 时刻),盖进 valid_from;
+        `now` 是事务时间(T',写库时刻),盖进 created_at。两者分开。
+
         与 find_superseded 分离 —— 纯确定性逻辑,不碰 LLM/manager,便于单测。
         """
         now = now or datetime.now()
+        event_time = event_time or now
         new_authority = authority_of(source_type)
         superseded_item_ids: set = set()
 
@@ -860,7 +886,7 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
                 # 证据累积达阈值 → 晋升:移出 pending,转主图
                 self.store.remove_pending(rel_data)
             superseded_item_ids |= self._write_relation_to_main(
-                rel_data, source_item_id, source_type, new_authority, now,
+                rel_data, source_item_id, source_type, new_authority, event_time, now,
             )
 
         return list(superseded_item_ids)
@@ -879,6 +905,7 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         source_item_id: Optional[str],
         source_type: str,
         new_authority: int,
+        event_time: datetime,
         now: datetime,
     ) -> set:
         """把一条关系写进主图:归一化 + 基数门控 + 权威闸门 + 软失效 + audit。
@@ -922,7 +949,8 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
             for old_rel in conflicts:
                 if new_authority < old_rel.authority:
                     continue
-                self.store.supersede_relation(old_rel.id, now)
+                # 关旧事实的事件区间(valid_until=新事实事件时间);expired_at=now(T')
+                self.store.supersede_relation(old_rel.id, event_time, expired_at=now)
                 self.store.log_audit(
                     "supersede", "relation", old_rel.id,
                     payload={
@@ -936,7 +964,9 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
 
         new_rel = Relation(
             id=uuid.uuid4().hex[:12], subject_id=subject_id, predicate=predicate,
-            object_id=object_id, scope=scope, valid_from=now,
+            object_id=object_id, scope=scope,
+            valid_from=event_time,    # T 事件时间
+            created_at=now,           # T' 事务时间
             source_item_id=source_item_id, confidence=base_confidence(source_type),
             source_type=source_type, authority=new_authority,
         )
