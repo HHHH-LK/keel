@@ -183,7 +183,8 @@ class MemoryManager:
             if self.config.storage_dir is not None:
                 kg_path = self.config.storage_dir / "kg.db"
             store = KGStore(kg_path)
-            return KnowledgeGraphConflictDetector(llm, store)
+            # 把 embedder 传进去,让 query_facts 的语义路径在生产路径上开启
+            return KnowledgeGraphConflictDetector(llm, store, embedder=self.embedding)
 
         return None
 

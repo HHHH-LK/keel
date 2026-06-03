@@ -13,14 +13,16 @@
 依赖: LLM 用于实体+关系抽取(extract_relations)。
 """
 import json
+import math
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from my_agent_llms.memory.conflict import ConflictDetector
+from my_agent_llms.memory.embeddings import _tokenize
 
 if TYPE_CHECKING:
     from my_agent_llms.memory.item import MemoryItem
@@ -47,6 +49,38 @@ class Relation:
     valid_until: Optional[datetime] = None
     source_item_id: Optional[str] = None
     confidence: float = 1.0
+
+
+# ── 混合检索工具:RRF + 余弦 ────────────────────────────────
+
+def reciprocal_rank_fusion(
+    rankings: Sequence[Sequence[str]],
+    k: int = 60,
+) -> List[Tuple[str, float]]:
+    """Reciprocal Rank Fusion —— 把多个排序榜单融合成一个。
+
+    每个榜单是一组 id(按相关性降序)。某 id 在某榜单排第 r 位(0-based),
+    贡献 1/(k + r) 分;跨榜单累加。同时进多个榜单前列的项得分最高。
+
+    k=60 是 RRF 论文的经验默认值,削弱单榜单头部的绝对优势,
+    让"多榜单共识"压过"单榜单极端高分"。
+
+    返回 [(id, fused_score), ...] 按融合分降序。
+    """
+    scores: Dict[str, float] = {}
+    for ranking in rankings:
+        for rank, item_id in enumerate(ranking):
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
+    return sorted(scores.items(), key=lambda kv: -kv[1])
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
 
 
 # ── SQLite 存储 ────────────────────────────────────────────
@@ -378,42 +412,111 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
     除了冲突检测外,还提供 query_facts(query) 让 recall 路径能查图。
     """
 
+    # 语义路径的候选池上限:活跃关系超过这个数就跳过 embedding(避免每次查询全量嵌入)
+    _SEMANTIC_POOL_CAP = 200
+
     def __init__(
         self,
         llm,
         store: Optional[KGStore] = None,
         context_window: int = 3,
+        embedder=None,
     ):
         self.llm = llm
         self.store = store if store is not None else KGStore()
         self.context_window = context_window  # 抽取时参考最近 N 条 L1 消息推断 scope
+        self.embedder = embedder              # 有则开语义路径,无则降级为"图遍历+关键词"
+        self._rel_emb_cache: Dict[str, List[float]] = {}  # rel_id → 关系串向量(三元组不可变,可缓存)
 
     def query_facts(self, query: str, max_facts: int = 8) -> List[str]:
-        """根据自然语言 query,从 KG 找当前有效的相关事实。
+        """根据自然语言 query,从 KG 找当前有效的相关事实(混合检索 + RRF)。
 
-        流程:
-        1. LLM 从 query 抽实体
-        2. 对每个实体,找它参与的活跃关系
-        3. 返回自然语言事实列表(用于喂给上层 LLM)
+        三路 ranker 对"活跃关系"统一候选池打分:
+        1. 图遍历:LLM 抽 query 实体 → 精确匹配关系(精度高但实体名抽歪就漏)
+        2. 关键词:query 与关系串的 token 重叠(不依赖实体抽取,兜底)
+        3. 语义:query 与关系串的 embedding 余弦(有 embedder 才开)
+
+        三路各自产出排序榜单,RRF 融合 → 取前 max_facts 条转自然语言。
         """
+        active = self.store.all_relations(only_active=True)
+        if not active:
+            return []
+        nl_map: Dict[str, str] = {}
+        for r in active:
+            nl = self.store.relation_to_nl(r)
+            if nl:
+                nl_map[r.id] = nl
+        if not nl_map:
+            return []
+
+        rankings: List[List[str]] = []
+        graph_ids = self._rank_by_graph(query, nl_map)
+        if graph_ids:
+            rankings.append(graph_ids)
+        keyword_ids = self._rank_by_keyword(query, nl_map)
+        if keyword_ids:
+            rankings.append(keyword_ids)
+        semantic_ids = self._rank_by_semantic(query, nl_map)
+        if semantic_ids:
+            rankings.append(semantic_ids)
+
+        if not rankings:
+            return []
+
+        fused = reciprocal_rank_fusion(rankings)
+        return [nl_map[rid] for rid, _ in fused[:max_facts] if rid in nl_map]
+
+    def _rank_by_graph(self, query: str, nl_map: Dict[str, str]) -> List[str]:
+        """图遍历路径:抽 query 实体 → 找其参与的活跃关系。"""
         entities = self._extract_query_entities(query)
         if not entities:
             return []
-
-        seen_rel_ids: set = set()
-        facts: List[str] = []
+        ordered: List[str] = []
+        seen: set = set()
         for entity_name in entities:
-            rels = self.store.find_active_relations_for_entity(entity_name)
-            for r in rels:
-                if r.id in seen_rel_ids:
+            for r in self.store.find_active_relations_for_entity(entity_name):
+                if r.id in seen or r.id not in nl_map:
                     continue
-                seen_rel_ids.add(r.id)
-                nl = self.store.relation_to_nl(r)
-                if nl:
-                    facts.append(nl)
-                if len(facts) >= max_facts:
-                    return facts
-        return facts
+                seen.add(r.id)
+                ordered.append(r.id)
+        return ordered
+
+    def _rank_by_keyword(self, query: str, nl_map: Dict[str, str]) -> List[str]:
+        """关键词路径:query 与关系串的 token 重叠数,降序。零重叠的丢弃。"""
+        q_tokens = set(_tokenize(query))
+        if not q_tokens:
+            return []
+        scored: List[Tuple[str, int]] = []
+        for rid, nl in nl_map.items():
+            overlap = len(q_tokens & set(_tokenize(nl)))
+            if overlap > 0:
+                scored.append((rid, overlap))
+        scored.sort(key=lambda kv: -kv[1])
+        return [rid for rid, _ in scored]
+
+    def _rank_by_semantic(self, query: str, nl_map: Dict[str, str]) -> List[str]:
+        """语义路径:query 与关系串的 embedding 余弦,降序。无 embedder 或池过大则跳过。"""
+        if self.embedder is None or len(nl_map) > self._SEMANTIC_POOL_CAP:
+            return []
+        try:
+            q_vec = self.embedder.embed(query)
+        except Exception as exc:
+            print(f"⚠️ KG 语义检索 embed 失败,跳过该路: {exc}")
+            return []
+        scored: List[Tuple[str, float]] = []
+        for rid, nl in nl_map.items():
+            vec = self._rel_emb_cache.get(rid)
+            if vec is None:
+                try:
+                    vec = self.embedder.embed(nl)
+                except Exception:
+                    continue
+                self._rel_emb_cache[rid] = vec
+            sim = _cosine(q_vec, vec)
+            if sim > 0:
+                scored.append((rid, sim))
+        scored.sort(key=lambda kv: -kv[1])
+        return [rid for rid, _ in scored]
 
     def _build_context_hint(self, new_item, manager) -> Optional[str]:
         """从 L1 取最近 N 条 (排除自身) 作为抽取时的上下文提示。"""
