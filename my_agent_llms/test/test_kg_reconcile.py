@@ -7,8 +7,32 @@
 import json
 from datetime import datetime, timedelta
 
-from my_agent_llms.memory.kg import KGStore
+from my_agent_llms.memory.kg import KGStore, Relation
 from my_agent_llms.memory.kg_reconcile import KGReconciler
+
+
+class FakeLLM:
+    """固定返回一组冲突提议(模拟冷回路 LLM 语义判断)。"""
+
+    def __init__(self, proposals):
+        self._proposals = proposals
+
+    def invoke(self, messages):
+        return json.dumps(self._proposals, ensure_ascii=False)
+
+
+def _two_conflicting_facts(store):
+    """直接塞两条语义冲突但谓词不同的事实(词表抓不到):喜欢咖啡 vs 讨厌咖啡。"""
+    uid = store.get_or_create_entity("PERSON", "user")
+    coffee = store.get_or_create_entity("ITEM", "咖啡")
+    store.add_relation(Relation(
+        id="ra", subject_id=uid, predicate="喜欢", object_id=coffee,
+        valid_from=datetime(2025, 1, 1), source_type="user_stated", authority=2,
+    ))
+    store.add_relation(Relation(
+        id="rb", subject_id=uid, predicate="讨厌", object_id=coffee,
+        valid_from=datetime(2025, 2, 1), source_type="user_stated", authority=2,
+    ))
 
 
 def _rel(subj, pred, obj, scope="", subj_type="PERSON", obj_type="ITEM"):
@@ -54,3 +78,41 @@ def test_reconcile_keeps_corroborated_pending():
     r = KGReconciler(store, pending_ttl_seconds=3600, pending_promote_hits=2)
     r.reconcile(now=old + timedelta(days=1))
     assert len(store.pending_entries()) == 1
+
+
+# ─────────────────────────────────────────────
+# Stage 2: 语义冲突(LLM 提议 → 置信门确认 → 处置)
+# ─────────────────────────────────────────────
+
+def test_semantic_conflict_resolved_via_llm_proposal():
+    """LLM 提议'喜欢咖啡 vs 讨厌咖啡'冲突且高置信 → supersede 更旧的一方。"""
+    store = KGStore()
+    _two_conflicting_facts(store)
+    fake = FakeLLM([{"fact_a_id": "ra", "fact_b_id": "rb", "confidence": 0.9, "reason": "喜欢vs讨厌"}])
+    r = KGReconciler(store, llm=fake, conflict_confidence_threshold=0.7)
+    report = r.reconcile(now=datetime(2025, 3, 1))
+    active = {a.id for a in store.find_active_relations_for_entity("user")}
+    assert active == {"rb"}                     # 更新的(讨厌,2月)留下
+    assert "ra" in report["conflicts_resolved"]  # 更旧的(喜欢,1月)被取代
+
+
+def test_low_confidence_conflict_not_applied():
+    """低置信提议不处置 —— 确认门挡住,两条都留。"""
+    store = KGStore()
+    _two_conflicting_facts(store)
+    fake = FakeLLM([{"fact_a_id": "ra", "fact_b_id": "rb", "confidence": 0.4, "reason": "不确定"}])
+    r = KGReconciler(store, llm=fake, conflict_confidence_threshold=0.7)
+    report = r.reconcile(now=datetime(2025, 3, 1))
+    active = {a.id for a in store.find_active_relations_for_entity("user")}
+    assert active == {"ra", "rb"}
+    assert report["conflicts_resolved"] == []
+
+
+def test_no_llm_skips_semantic_pass():
+    """没有 llm → 不跑语义冲突,只跑确定性 GC。"""
+    store = KGStore()
+    _two_conflicting_facts(store)
+    r = KGReconciler(store)  # 无 llm
+    report = r.reconcile(now=datetime(2025, 3, 1))
+    assert "conflicts_resolved" not in report
+    assert len(store.find_active_relations_for_entity("user")) == 2
