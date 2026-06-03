@@ -86,12 +86,30 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 # ── SQLite 存储 ────────────────────────────────────────────
 
+def normalize_name(name: str) -> str:
+    """实体名归一化:首尾去空白 + 小写 + 内部空白折叠。
+
+    让 "Python"/"python"/"  Python " 收敛成同一个实体,治"实体分身"。
+    (更进一步的同义合并 "Python"/"Python语言" 走 alias 表或后续 embedding 去重。)
+    """
+    import re
+    return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS kg_entities (
-    id   TEXT PRIMARY KEY,
-    type TEXT NOT NULL,
-    name TEXT NOT NULL,
-    UNIQUE(type, name)
+    id        TEXT PRIMARY KEY,
+    type      TEXT NOT NULL,
+    name      TEXT NOT NULL,
+    name_norm TEXT NOT NULL,
+    UNIQUE(type, name_norm)
+);
+
+CREATE TABLE IF NOT EXISTS kg_aliases (
+    alias_norm TEXT NOT NULL,
+    entity_id  TEXT NOT NULL,
+    confidence REAL DEFAULT 1.0,
+    PRIMARY KEY (alias_norm, entity_id)
 );
 
 CREATE TABLE IF NOT EXISTS kg_relations (
@@ -135,19 +153,36 @@ class KGStore:
 
     # ── 实体 ────────────────────────────────────────────────
     def get_or_create_entity(self, type_: str, name: str) -> str:
+        """按归一化名去重。命中顺序:同 (type, name_norm) → alias 表 → 新建。"""
+        norm = normalize_name(name)
         row = self.conn.execute(
-            "SELECT id FROM kg_entities WHERE type=? AND name=?",
-            (type_, name),
+            "SELECT id FROM kg_entities WHERE type=? AND name_norm=?",
+            (type_, norm),
         ).fetchone()
         if row:
             return row["id"]
+        # alias 表:别名(归一化)指向已有实体
+        arow = self.conn.execute(
+            "SELECT entity_id FROM kg_aliases WHERE alias_norm=?",
+            (norm,),
+        ).fetchone()
+        if arow:
+            return arow["entity_id"]
         eid = uuid.uuid4().hex[:12]
         self.conn.execute(
-            "INSERT INTO kg_entities(id, type, name) VALUES (?, ?, ?)",
-            (eid, type_, name),
+            "INSERT INTO kg_entities(id, type, name, name_norm) VALUES (?, ?, ?, ?)",
+            (eid, type_, name, norm),
         )
         self.conn.commit()
         return eid
+
+    def add_alias(self, alias: str, entity_id: str, confidence: float = 1.0) -> None:
+        """登记一个别名(归一化后)指向某实体。后续 get_or_create 用别名也能命中。"""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO kg_aliases(alias_norm, entity_id, confidence) VALUES (?, ?, ?)",
+            (normalize_name(alias), entity_id, confidence),
+        )
+        self.conn.commit()
 
     def get_entity(self, eid: str) -> Optional[Entity]:
         row = self.conn.execute(

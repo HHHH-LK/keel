@@ -91,3 +91,49 @@ def test_synonym_predicate_triggers_conflict():
     superseded = d.apply_extracted_relations([_rel("user", "居住", "上海")], source_item_id="i2")
     assert "i1" in superseded
     assert _active_objects(d) == {"上海"}
+
+
+# ─────────────────────────────────────────────
+# Task 1.3: 实体归一化 + alias(治实体分身)
+# ─────────────────────────────────────────────
+
+def test_entity_dedup_case_insensitive():
+    """Python / python / PYTHON 归一成同一个实体。"""
+    store = KGStore()
+    a = store.get_or_create_entity("TECH", "Python")
+    b = store.get_or_create_entity("TECH", "python")
+    c = store.get_or_create_entity("TECH", "PYTHON")
+    assert a == b == c
+
+
+def test_entity_dedup_whitespace():
+    """首尾/多余空白不产生分身。"""
+    store = KGStore()
+    a = store.get_or_create_entity("TECH", "Python")
+    b = store.get_or_create_entity("TECH", "  Python  ")
+    assert a == b
+
+
+def test_distinct_entities_stay_distinct():
+    """不同实体仍然分开。"""
+    store = KGStore()
+    a = store.get_or_create_entity("TECH", "Python")
+    b = store.get_or_create_entity("TECH", "Java")
+    assert a != b
+
+
+def test_alias_resolves_to_same_entity():
+    """登记别名后,用别名也命中同一实体。"""
+    store = KGStore()
+    pid = store.get_or_create_entity("TECH", "Python")
+    store.add_alias("蟒蛇", pid)
+    assert store.get_or_create_entity("TECH", "蟒蛇") == pid
+
+
+def test_entity_split_no_longer_causes_false_supersede():
+    """实体归一后,'Python'/'python' 不再被当成两个值而虚假取代(多值场景共存)。"""
+    d = _detector()
+    d.apply_extracted_relations([_rel("user", "喜欢", "Python")], source_item_id="i1")
+    superseded = d.apply_extracted_relations([_rel("user", "喜欢", "python")], source_item_id="i2")
+    assert superseded == []                 # 同一实体,且'喜欢'多值 → 不取代
+    assert _active_objects(d) == {"Python"}  # 归一成一个
