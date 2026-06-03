@@ -150,6 +150,17 @@ CREATE TABLE IF NOT EXISTS kg_audit (
     reason      TEXT,
     at_time     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS kg_pending (
+    triple_key     TEXT PRIMARY KEY,   -- 归一化去重键 subj|pred|obj|scope
+    triple_json    TEXT NOT NULL,      -- 原始 rel_data
+    reason         TEXT,               -- not_grounded / inferred / low_confidence
+    source_item_id TEXT,
+    source_type    TEXT,
+    hit_count      INTEGER DEFAULT 1,  -- 跨轮被独立抽到的次数(证据累积)
+    created_at     TEXT NOT NULL,
+    last_seen_at   TEXT NOT NULL
+);
 """
 
 
@@ -227,6 +238,66 @@ class KGStore:
         """全部审计记录,按时间升序。"""
         rows = self.conn.execute(
             "SELECT * FROM kg_audit ORDER BY at_time"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── pending(待确认事实) ──────────────────────────────────
+    @staticmethod
+    def pending_key(rel_data: dict) -> str:
+        """归一化去重键:让同一事实的不同措辞(喜欢/偏好)累积到一条。"""
+        subj = normalize_name(rel_data.get("subject_name", ""))
+        pred, _ = normalize_predicate(rel_data.get("predicate", ""))
+        obj = normalize_name(rel_data.get("object_name", ""))
+        scope = normalize_scope(rel_data.get("scope", "") or "")
+        return f"{subj}|{pred}|{obj}|{scope}"
+
+    def record_pending(
+        self,
+        rel_data: dict,
+        *,
+        reason: str,
+        source_item_id: Optional[str] = None,
+        source_type: str = "inferred",
+        now: Optional[datetime] = None,
+    ) -> int:
+        """登记一条待确认事实。已存在则 hit_count+1(证据累积)。返回当前 hit_count。"""
+        now = now or datetime.now()
+        key = self.pending_key(rel_data)
+        row = self.conn.execute(
+            "SELECT hit_count FROM kg_pending WHERE triple_key=?", (key,)
+        ).fetchone()
+        if row:
+            hits = row["hit_count"] + 1
+            self.conn.execute(
+                "UPDATE kg_pending SET hit_count=?, last_seen_at=? WHERE triple_key=?",
+                (hits, now.isoformat(), key),
+            )
+        else:
+            hits = 1
+            self.conn.execute(
+                """INSERT INTO kg_pending
+                   (triple_key, triple_json, reason, source_item_id, source_type,
+                    hit_count, created_at, last_seen_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    key,
+                    json.dumps(rel_data, ensure_ascii=False),
+                    reason, source_item_id, source_type,
+                    1, now.isoformat(), now.isoformat(),
+                ),
+            )
+        self.conn.commit()
+        return hits
+
+    def remove_pending(self, rel_data: dict) -> None:
+        self.conn.execute(
+            "DELETE FROM kg_pending WHERE triple_key=?", (self.pending_key(rel_data),)
+        )
+        self.conn.commit()
+
+    def pending_entries(self) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM kg_pending ORDER BY last_seen_at"
         ).fetchall()
         return [dict(r) for r in rows]
 

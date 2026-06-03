@@ -223,3 +223,30 @@ def test_no_supersede_audit_for_multivalue():
     d.apply_extracted_relations([_rel("user", "过敏", "牛奶")], source_item_id="i2")
     entries = d.store.audit_entries()
     assert not any(e["op"] == "supersede" for e in entries)
+
+
+# ─────────────────────────────────────────────
+# Task 2.3: pending 表 + 证据累积
+# ─────────────────────────────────────────────
+
+def test_record_pending_creates_entry():
+    store = KGStore()
+    hits = store.record_pending(_rel("user", "想学", "Rust"), reason="inferred", source_item_id="i1")
+    assert hits == 1
+    assert len(store.pending_entries()) == 1
+
+
+def test_record_pending_accrues_across_synonyms():
+    """同一 triple 不同措辞(喜欢/偏好)归一成同 key → 累积而非重复。"""
+    store = KGStore()
+    store.record_pending(_rel("user", "喜欢", "Rust"), reason="inferred", source_item_id="i1")
+    hits = store.record_pending(_rel("user", "偏好", "Rust"), reason="inferred", source_item_id="i2")
+    assert hits == 2
+    assert len(store.pending_entries()) == 1
+
+
+def test_remove_pending():
+    store = KGStore()
+    store.record_pending(_rel("user", "想学", "Rust"), reason="inferred", source_item_id="i1")
+    store.remove_pending(_rel("user", "想学", "Rust"))
+    assert store.pending_entries() == []
