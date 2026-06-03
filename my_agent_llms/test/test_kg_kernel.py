@@ -352,3 +352,39 @@ def test_should_skip_empty_and_punctuation():
     assert should_extract("") is False
     assert should_extract("   ") is False
     assert should_extract("。。。") is False
+
+
+# ─────────────────────────────────────────────
+# Task 2.5: 复写 = 强化(不重复入库,bump confidence)
+# ─────────────────────────────────────────────
+
+def _restate(d, sid):
+    d.apply_extracted_relations(
+        [_rel("user", "喜欢", "Python")],
+        source_item_id=sid, source_type="user_stated", source_text="我喜欢 Python",
+    )
+
+
+def test_restatement_no_duplicate_relation():
+    """同一事实复写不产生重复关系行。"""
+    d = _detector()
+    _restate(d, "i1")
+    _restate(d, "i2")
+    active = d.store.find_active_relations_for_entity("user")
+    pythons = [r for r in active if d.store.get_entity(r.object_id).name == "Python"]
+    assert len(pythons) == 1
+
+
+def test_restatement_bumps_confidence():
+    """复写是印证信号 → confidence 提升。"""
+    d = _detector()
+    _restate(d, "i1")
+    before = d.store.find_active_relations_for_entity("user")[0].confidence
+    _restate(d, "i2")
+    after = d.store.find_active_relations_for_entity("user")[0].confidence
+    assert after > before
+
+
+def test_initial_confidence_by_source():
+    """初始 confidence 按来源:用户显式 > 用户陈述。"""
+    assert kg_vocab.base_confidence("user_explicit") > kg_vocab.base_confidence("user_stated")

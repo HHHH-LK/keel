@@ -95,3 +95,17 @@ DEFAULT_SOURCE_TYPE = "user_stated"
 def authority_of(source_type: str) -> int:
     """source_type → 权威等级整数。未知来源按最低(0)处理。"""
     return _AUTHORITY.get(source_type or "", 0)
+
+
+# 初始置信度:越权威的来源,事实初始 confidence 越高(复写印证再往上 bump)
+_BASE_CONFIDENCE: Dict[str, float] = {
+    "user_explicit": 1.0,
+    "user_stated": 0.9,
+    "tool": 0.8,
+    "inferred": 0.7,
+}
+
+
+def base_confidence(source_type: str) -> float:
+    """source_type → 初始 confidence。未知来源按 0.7。"""
+    return _BASE_CONFIDENCE.get(source_type or "", 0.7)

@@ -27,6 +27,7 @@ from my_agent_llms.memory.kg_vocab import (
     CARDINALITY_SINGLE,
     DEFAULT_SOURCE_TYPE,
     authority_of,
+    base_confidence,
     normalize_predicate,
     normalize_scope,
 )
@@ -406,6 +407,41 @@ class KGStore:
             ),
         ).fetchall()
         return [self._row_to_relation(r) for r in rows]
+
+    def find_active_exact(
+        self,
+        subject_id: str,
+        predicate: str,
+        object_id: str,
+        scope: str,
+        at_time: Optional[datetime] = None,
+    ) -> Optional[Relation]:
+        """找一条完全相同 (subject, predicate, object, scope) 的活跃关系(用于复写去重)。"""
+        at_time = at_time or datetime.now()
+        row = self.conn.execute(
+            """SELECT * FROM kg_relations
+               WHERE subject_id=? AND predicate=? AND object_id=? AND scope=?
+                 AND valid_from<=? AND (valid_until IS NULL OR valid_until>?)
+               LIMIT 1""",
+            (subject_id, predicate, object_id, scope,
+             at_time.isoformat(), at_time.isoformat()),
+        ).fetchone()
+        return self._row_to_relation(row) if row else None
+
+    def reinforce_relation(
+        self, rel_id: str, confidence: float, authority: Optional[int] = None,
+    ) -> None:
+        """复写印证 → 提升 confidence(可选地提升 authority)。"""
+        if authority is None:
+            self.conn.execute(
+                "UPDATE kg_relations SET confidence=? WHERE id=?", (confidence, rel_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE kg_relations SET confidence=?, authority=? WHERE id=?",
+                (confidence, authority, rel_id),
+            )
+        self.conn.commit()
 
     def supersede_relation(self, rel_id: str, at_time: datetime) -> None:
         """给一个关系设 valid_until = at_time(让它失效)。"""
@@ -868,6 +904,16 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         predicate, cardinality = normalize_predicate(raw_predicate)
         scope = normalize_scope(rel_data.get("scope", "") or "")
 
+        # 复写 = 强化:同一事实已在图里 → 不加重复行,bump confidence(取更高权威)
+        exact = self.store.find_active_exact(subject_id, predicate, object_id, scope, now)
+        if exact is not None:
+            self.store.reinforce_relation(
+                exact.id,
+                min(1.0, exact.confidence + 0.05),
+                authority=max(exact.authority, new_authority),
+            )
+            return superseded_item_ids
+
         if cardinality == CARDINALITY_SINGLE:
             conflicts = self.store.find_conflicts(
                 subject_id=subject_id, predicate=predicate, scope=scope,
@@ -891,7 +937,7 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         new_rel = Relation(
             id=uuid.uuid4().hex[:12], subject_id=subject_id, predicate=predicate,
             object_id=object_id, scope=scope, valid_from=now,
-            source_item_id=source_item_id, confidence=1.0,
+            source_item_id=source_item_id, confidence=base_confidence(source_type),
             source_type=source_type, authority=new_authority,
         )
         self.store.add_relation(new_rel)
