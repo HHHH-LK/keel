@@ -201,3 +201,25 @@ def test_equal_or_higher_authority_can_supersede():
         [_rel("user", "住在", "上海")], source_item_id="i2", source_type="user_explicit",
     )
     assert "i1" in superseded
+
+
+# ─────────────────────────────────────────────
+# Task 1.6: audit log(supersede 可追溯/可回滚)
+# ─────────────────────────────────────────────
+
+def test_supersede_writes_audit():
+    """每次 supersede 落一条 audit。"""
+    d = _detector()
+    d.apply_extracted_relations([_rel("user", "住在", "北京")], source_item_id="i1")
+    d.apply_extracted_relations([_rel("user", "住在", "上海")], source_item_id="i2")
+    entries = d.store.audit_entries()
+    assert any(e["op"] == "supersede" for e in entries)
+
+
+def test_no_supersede_audit_for_multivalue():
+    """多值谓词只追加、不取代 → 不产生 supersede audit。"""
+    d = _detector()
+    d.apply_extracted_relations([_rel("user", "过敏", "花生")], source_item_id="i1")
+    d.apply_extracted_relations([_rel("user", "过敏", "牛奶")], source_item_id="i2")
+    entries = d.store.audit_entries()
+    assert not any(e["op"] == "supersede" for e in entries)

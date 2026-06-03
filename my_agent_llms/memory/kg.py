@@ -140,6 +140,16 @@ CREATE INDEX IF NOT EXISTS idx_rel_spo
     ON kg_relations(subject_id, predicate, scope);
 CREATE INDEX IF NOT EXISTS idx_rel_valid
     ON kg_relations(valid_until);
+
+CREATE TABLE IF NOT EXISTS kg_audit (
+    id          TEXT PRIMARY KEY,
+    op          TEXT NOT NULL,         -- supersede / merge / negate / correct ...
+    target_type TEXT,                  -- relation / entity
+    target_id   TEXT,
+    payload     TEXT,                  -- JSON
+    reason      TEXT,
+    at_time     TEXT NOT NULL
+);
 """
 
 
@@ -185,6 +195,40 @@ class KGStore:
         )
         self.conn.commit()
         return eid
+
+    # ── audit ───────────────────────────────────────────────
+    def log_audit(
+        self,
+        op: str,
+        target_type: str,
+        target_id: str,
+        *,
+        payload: Optional[dict] = None,
+        reason: str = "",
+        at_time: Optional[datetime] = None,
+    ) -> None:
+        """记一条审计 —— supersede/merge/negate 等结构化操作都该留痕(可追溯、可回滚)。"""
+        self.conn.execute(
+            "INSERT INTO kg_audit(id, op, target_type, target_id, payload, reason, at_time) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                uuid.uuid4().hex[:12],
+                op,
+                target_type,
+                target_id,
+                json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+                reason,
+                (at_time or datetime.now()).isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def audit_entries(self) -> List[dict]:
+        """全部审计记录,按时间升序。"""
+        rows = self.conn.execute(
+            "SELECT * FROM kg_audit ORDER BY at_time"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def add_alias(self, alias: str, entity_id: str, confidence: float = 1.0) -> None:
         """登记一个别名(归一化后)指向某实体。后续 get_or_create 用别名也能命中。"""
@@ -680,6 +724,17 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
                     if new_authority < old_rel.authority:
                         continue
                     self.store.supersede_relation(old_rel.id, now)
+                    self.store.log_audit(
+                        "supersede", "relation", old_rel.id,
+                        payload={
+                            "predicate": predicate,
+                            "scope": scope,
+                            "new_object_id": object_id,
+                            "by_source_item": source_item_id,
+                        },
+                        reason="单值谓词新值取代旧值",
+                        at_time=now,
+                    )
                     if old_rel.source_item_id:
                         superseded_item_ids.add(old_rel.source_item_id)
 
