@@ -22,8 +22,8 @@ class MemoryConfig(BaseModel):
     """
 
     # ── 容量上限 ────────────────────────────────────────────
-    l1_max_tokens: int = 4000
-    l1_recent_turns: int = 6
+    l1_max_tokens: int = 8000      # 工作记忆 token 预算(放得下典型对话活跃工作集,减少抖动)
+    l1_recent_turns: int = 10      # 最近 N 条硬保护,永不驱逐
     l2_max_tokens: int = 1000
 
     # ── L2 分层托管(摘要纠错) ─────────────────────────────
