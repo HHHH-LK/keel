@@ -609,11 +609,13 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         store: Optional[KGStore] = None,
         context_window: int = 3,
         embedder=None,
+        pending_promote_hits: int = 2,
     ):
         self.llm = llm
         self.store = store if store is not None else KGStore()
         self.context_window = context_window  # 抽取时参考最近 N 条 L1 消息推断 scope
         self.embedder = embedder              # 有则开语义路径,无则降级为"图遍历+关键词"
+        self.pending_promote_hits = pending_promote_hits  # pending 累积到几次证据才晋升主图
         self._rel_emb_cache: Dict[str, List[float]] = {}  # rel_id → 关系串向量(三元组不可变,可缓存)
 
     def query_facts(self, query: str, max_facts: int = 8) -> List[str]:
@@ -752,8 +754,12 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         )
         if not relations_data:
             return []
+        # 按源分级:用户消息=user_stated,assistant 自述=inferred(进 pending 待印证)
+        role = getattr(new_item, "role", "user")
+        source_type = "user_stated" if role == "user" else "inferred"
         return self.apply_extracted_relations(
             relations_data, source_item_id=new_item.id,
+            source_type=source_type, source_text=new_item.content,
         )
 
     def apply_extracted_relations(
@@ -762,83 +768,103 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         source_item_id: Optional[str],
         *,
         source_type: str = DEFAULT_SOURCE_TYPE,
+        source_text: str = "",
         now: Optional[datetime] = None,
     ) -> List[str]:
-        """把已抽取的关系做归一化 + 基数判定 + 权威闸门 + 冲突处置,入库。
+        """把已抽取的关系按"主图 vs pending"路由后处置。返回被取代的旧 item id。
 
-        与 find_superseded 分离 —— 这一段是纯确定性逻辑(不碰 LLM/manager),
-        便于单测。返回被取代的旧 MemoryItem ID 列表。
+        路由(写入协议):
+        - 传了 source_text 且 grounding 失败 → pending(not_grounded),防幻觉入图
+        - 低权威来源(LLM 推断)→ pending(inferred),反复印证达阈值才晋升主图
+        - 用户级 + grounded → 直写主图
 
-        基数门控(安全关键):
-        - 单值谓词(现居地/主力语言…)→ 新值取代同 (subject, 谓词, scope) 的旧值
-        - 多值谓词(过敏/会…)→ 只追加,绝不取代(否则"对花生过敏"会被"对牛奶过敏"删掉)
-
-        权威闸门(安全关键):
-        - 低权威(LLM 推断)不能 supersede 高权威(用户显式)的事实
+        与 find_superseded 分离 —— 纯确定性逻辑,不碰 LLM/manager,便于单测。
         """
         now = now or datetime.now()
         new_authority = authority_of(source_type)
         superseded_item_ids: set = set()
 
         for rel_data in relations_data:
-            try:
-                subject_id = self.store.get_or_create_entity(
-                    rel_data["subject_type"], rel_data["subject_name"],
+            route, reason = self._route(rel_data, source_type, source_text)
+            if route == "pending":
+                hits = self.store.record_pending(
+                    rel_data, reason=reason,
+                    source_item_id=source_item_id, source_type=source_type, now=now,
                 )
-                object_id = self.store.get_or_create_entity(
-                    rel_data["object_type"], rel_data["object_name"],
-                )
-            except (KeyError, sqlite3.Error) as exc:
-                print(f"⚠️ KG 实体写入失败,跳过该关系: {exc}")
-                continue
-
-            raw_predicate = rel_data.get("predicate", "")
-            if not raw_predicate:
-                continue
-            # 归一谓词 → canonical + 基数;归一 scope → canonical
-            predicate, cardinality = normalize_predicate(raw_predicate)
-            scope = normalize_scope(rel_data.get("scope", "") or "")
-
-            # 仅单值谓词做冲突取代;多值谓词只追加
-            if cardinality == CARDINALITY_SINGLE:
-                conflicts = self.store.find_conflicts(
-                    subject_id=subject_id,
-                    predicate=predicate,
-                    scope=scope,
-                    exclude_object_id=object_id,
-                    at_time=now,
-                )
-                for old_rel in conflicts:
-                    # 权威闸门:低权威不能取代高权威(防 LLM 推断抹掉用户硬约束)
-                    if new_authority < old_rel.authority:
-                        continue
-                    self.store.supersede_relation(old_rel.id, now)
-                    self.store.log_audit(
-                        "supersede", "relation", old_rel.id,
-                        payload={
-                            "predicate": predicate,
-                            "scope": scope,
-                            "new_object_id": object_id,
-                            "by_source_item": source_item_id,
-                        },
-                        reason="单值谓词新值取代旧值",
-                        at_time=now,
-                    )
-                    if old_rel.source_item_id:
-                        superseded_item_ids.add(old_rel.source_item_id)
-
-            new_rel = Relation(
-                id=uuid.uuid4().hex[:12],
-                subject_id=subject_id,
-                predicate=predicate,
-                object_id=object_id,
-                scope=scope,
-                valid_from=now,
-                source_item_id=source_item_id,
-                confidence=1.0,
-                source_type=source_type,
-                authority=new_authority,
+                if hits < self.pending_promote_hits:
+                    continue
+                # 证据累积达阈值 → 晋升:移出 pending,转主图
+                self.store.remove_pending(rel_data)
+            superseded_item_ids |= self._write_relation_to_main(
+                rel_data, source_item_id, source_type, new_authority, now,
             )
-            self.store.add_relation(new_rel)
 
         return list(superseded_item_ids)
+
+    def _route(self, rel_data: dict, source_type: str, source_text: str):
+        """决定一条关系进主图还是 pending。返回 (route, reason)。"""
+        if source_text and not is_grounded(rel_data, source_text):
+            return "pending", "not_grounded"
+        if authority_of(source_type) <= authority_of("inferred"):
+            return "pending", "inferred"
+        return "main", ""
+
+    def _write_relation_to_main(
+        self,
+        rel_data: dict,
+        source_item_id: Optional[str],
+        source_type: str,
+        new_authority: int,
+        now: datetime,
+    ) -> set:
+        """把一条关系写进主图:归一化 + 基数门控 + 权威闸门 + 软失效 + audit。
+
+        基数门控(安全):单值谓词新值取代旧值;多值谓词(过敏/会)只追加不取代。
+        权威闸门(安全):低权威不能 supersede 高权威。
+        """
+        superseded_item_ids: set = set()
+        try:
+            subject_id = self.store.get_or_create_entity(
+                rel_data["subject_type"], rel_data["subject_name"],
+            )
+            object_id = self.store.get_or_create_entity(
+                rel_data["object_type"], rel_data["object_name"],
+            )
+        except (KeyError, sqlite3.Error) as exc:
+            print(f"⚠️ KG 实体写入失败,跳过该关系: {exc}")
+            return superseded_item_ids
+
+        raw_predicate = rel_data.get("predicate", "")
+        if not raw_predicate:
+            return superseded_item_ids
+        predicate, cardinality = normalize_predicate(raw_predicate)
+        scope = normalize_scope(rel_data.get("scope", "") or "")
+
+        if cardinality == CARDINALITY_SINGLE:
+            conflicts = self.store.find_conflicts(
+                subject_id=subject_id, predicate=predicate, scope=scope,
+                exclude_object_id=object_id, at_time=now,
+            )
+            for old_rel in conflicts:
+                if new_authority < old_rel.authority:
+                    continue
+                self.store.supersede_relation(old_rel.id, now)
+                self.store.log_audit(
+                    "supersede", "relation", old_rel.id,
+                    payload={
+                        "predicate": predicate, "scope": scope,
+                        "new_object_id": object_id, "by_source_item": source_item_id,
+                    },
+                    reason="单值谓词新值取代旧值", at_time=now,
+                )
+                if old_rel.source_item_id:
+                    superseded_item_ids.add(old_rel.source_item_id)
+
+        new_rel = Relation(
+            id=uuid.uuid4().hex[:12], subject_id=subject_id, predicate=predicate,
+            object_id=object_id, scope=scope, valid_from=now,
+            source_item_id=source_item_id, confidence=1.0,
+            source_type=source_type, authority=new_authority,
+        )
+        self.store.add_relation(new_rel)
+        return superseded_item_ids

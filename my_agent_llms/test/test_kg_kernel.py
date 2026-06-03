@@ -273,3 +273,52 @@ def test_user_self_subject_exempt():
 def test_non_user_subject_must_appear():
     """非 user 的 subject 必须在原文出现,否则疑似张冠李戴。"""
     assert is_grounded(_rel("李四", "喜欢", "Python", subj_type="PERSON"), "我喜欢 Python") is False
+
+
+# ─────────────────────────────────────────────
+# Task 2.1: 路由 main vs pending + 接线 source_type
+# ─────────────────────────────────────────────
+
+def test_inferred_fact_goes_to_pending():
+    """LLM 推断(低权威)不直接进主图,先进 pending 待确认。"""
+    d = _detector()
+    d.apply_extracted_relations(
+        [_rel("user", "喜欢", "Python")], source_item_id="i1", source_type="inferred",
+    )
+    assert _active_objects(d) == set()
+    assert len(d.store.pending_entries()) == 1
+
+
+def test_user_stated_grounded_fact_goes_to_main():
+    """用户陈述 + 原文支撑 → 直写主图。"""
+    d = _detector()
+    d.apply_extracted_relations(
+        [_rel("user", "喜欢", "Python")],
+        source_item_id="i1", source_type="user_stated", source_text="我喜欢 Python",
+    )
+    assert _active_objects(d) == {"Python"}
+
+
+def test_ungrounded_fact_goes_to_pending():
+    """原文不支撑(咖啡≠拿铁)→ 进 pending,不污染主图。"""
+    d = _detector()
+    d.apply_extracted_relations(
+        [_rel("user", "喜欢", "拿铁")],
+        source_item_id="i1", source_type="user_stated", source_text="我喜欢喝咖啡",
+    )
+    assert _active_objects(d) == set()
+    assert len(d.store.pending_entries()) == 1
+
+
+def test_pending_promotes_after_repeated_evidence():
+    """推断事实反复独立出现(达阈值)→ 晋升进主图,并从 pending 移除。"""
+    d = _detector()  # 默认 pending_promote_hits=2
+    d.apply_extracted_relations(
+        [_rel("user", "喜欢", "Python")], source_item_id="i1", source_type="inferred",
+    )
+    assert _active_objects(d) == set()              # 第一次:pending
+    d.apply_extracted_relations(
+        [_rel("user", "偏好", "Python")], source_item_id="i2", source_type="inferred",
+    )
+    assert _active_objects(d) == {"Python"}          # 第二次累积到 2 → 晋升
+    assert d.store.pending_entries() == []
