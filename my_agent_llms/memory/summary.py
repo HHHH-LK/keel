@@ -8,6 +8,41 @@ from my_agent_llms.memory.item import MemoryItem
 # summarizer 签名：(待压缩消息列表, 原有摘要文本) -> 新摘要文本
 Summarizer = Callable[[List[MemoryItem], str], str]
 
+# reconciler 签名：(当前摘要文本, 校正信号) -> 校正后的摘要文本
+# 用于 L2 分层托管:LLM 看懂"状态变了"后主动改写摘要,机械层只做护栏。
+SummaryReconciler = Callable[[str, str], str]
+
+
+class LLMReconciler:
+    """把 MyLLM 包成 SummaryReconciler —— L2 的语义编辑器。
+
+    与 LLMSummarizer(压缩新内容)不同,reconciler 负责"纠错":
+    拿当前摘要 + 一个变更/反思信号,让模型重写摘要,
+    区分"稳定事实(累加保留)"和"当前状态(以新为准)"。
+    """
+
+    DEFAULT_PROMPT = (
+        "你在维护一份关于用户的滚动摘要。请根据下面的『校正信号』更新『当前摘要』。\n"
+        "规则:\n"
+        "1. 稳定事实(掌握的技能/身份/经历)保留,不要因状态变化而删除。\n"
+        "2. 当前状态(正在做/最近在学)如与信号矛盾,以信号中的新信息为准。\n"
+        "3. 长度控制在 {max_tokens} token 内,去重,不要编造信号里没有的信息。\n\n"
+        "当前摘要:\n{current}\n\n校正信号:\n{signal}\n\n"
+        "请直接输出更新后的摘要正文,不要前缀。"
+    )
+
+    def __init__(self, llm, *, max_tokens: int = 400, prompt: Optional[str] = None):
+        self.llm = llm
+        self.max_tokens = max_tokens
+        self.prompt = prompt or self.DEFAULT_PROMPT
+
+    def __call__(self, current: str, signal: str) -> str:
+        prompt = self.prompt.format(
+            current=current, signal=signal, max_tokens=self.max_tokens
+        )
+        result = self.llm.invoke([{"role": "user", "content": prompt}])
+        return (result or "").strip() or current
+
 
 def _default_summarizer(batch: List[MemoryItem], previous: str) -> str:
     """没注入 LLM 时的兜底：直接把内容拼起来。"""
@@ -102,13 +137,54 @@ class SummaryMemory(MemoryTier):
         flush_threshold: int = 4,
         summarizer: Optional[Summarizer] = None,
         max_tokens: int = 1000,
+        reconciler: Optional[SummaryReconciler] = None,
     ):
         self.flush_threshold = flush_threshold
         self.summarizer = summarizer or _default_summarizer
         self.max_tokens = max_tokens
+        self.reconciler = reconciler
 
         self._summary_item: Optional[MemoryItem] = None
         self._buffer: List[MemoryItem] = []
+
+    def _cap_text(self, text: str) -> str:
+        """按 max_tokens(3 char/token 估算)截断尾部。"""
+        max_chars = self.max_tokens * 3
+        return text[-max_chars:] if len(text) > max_chars else text
+
+    def _set_summary_text(self, text: str) -> MemoryItem:
+        """直接设置/替换摘要文本(reconcile 与测试用)。"""
+        text = self._cap_text(text)
+        if self._summary_item is None:
+            self._summary_item = MemoryItem(
+                content=text, role="system", metadata={"kind": "summary"},
+            )
+        else:
+            self._summary_item.content = text
+            self._summary_item.token_estimate = max(1, len(text) // 3)
+        return self._summary_item
+
+    def reconcile(self, signal: str) -> Optional[MemoryItem]:
+        """L2 分层托管:让 reconciler 根据信号校正摘要,机械层兜底。
+
+        - 没有摘要 → 无事可做,返回 None。
+        - 没有 reconciler → 不动(降级),返回原摘要。
+        - reconciler 抛异常 / 吐空 → 保留旧摘要,不污染。
+        - 输出超 max_tokens → 截断。
+        """
+        if self._summary_item is None:
+            return None
+        if self.reconciler is None:
+            return self._summary_item
+        try:
+            new_text = self.reconciler(self._summary_item.content, signal)
+        except Exception as exc:
+            print(f"⚠️ L2 reconcile 失败,保留旧摘要: {exc}")
+            return self._summary_item
+        new_text = (new_text or "").strip()
+        if not new_text:
+            return self._summary_item
+        return self._set_summary_text(new_text)
 
     # ── MemoryTier 接口 ─────────────────────────────────────
     def add(self, item: MemoryItem) -> None:

@@ -16,6 +16,8 @@ class ColdStorage(MemoryTier):
         self.backend = backend
 
     def add(self, item: MemoryItem) -> None:
+        # 重复/重写交给后端处理:jsonl 走 last-write-wins,sqlite 走 REPLACE。
+        # 不在这层拦截 —— 否则字段变更(如 pinned)的重写会被吞掉。
         if self.backend is not None:
             self.backend.add(item)
 

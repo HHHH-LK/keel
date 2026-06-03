@@ -45,8 +45,14 @@ from my_agent_llms.memory.seed_score import (
     evaluate_prior_score,
     should_auto_pin,
 )
+from my_agent_llms.memory.recall_buffer import RecallBuffer
 from my_agent_llms.memory.semantic import SemanticIndex
-from my_agent_llms.memory.summary import Summarizer, SummaryMemory
+from my_agent_llms.memory.summary import (
+    LLMReconciler,
+    Summarizer,
+    SummaryMemory,
+    SummaryReconciler,
+)
 from my_agent_llms.memory.working import WorkingMemory
 
 
@@ -68,6 +74,7 @@ class MemoryManager:
         vector_backend: Optional[VectorBackend] = None,
         summarizer: Optional[Summarizer] = None,
         summary_flush_threshold: int = 4,
+        reconciler: Optional[SummaryReconciler] = None,
         conflict_detector: Optional[ConflictDetector] = None,
         llm=None,
     ):
@@ -79,13 +86,19 @@ class MemoryManager:
         self.semantic = SemanticIndex(
             vector_backend or self._build_vector_backend()
         )
+        # L2 reconciler: 显式优先,否则有 llm 时自动构造 LLMReconciler
+        if reconciler is None and llm is not None:
+            reconciler = LLMReconciler(llm, max_tokens=self.config.l2_max_tokens)
         self.summary = SummaryMemory(
             flush_threshold=summary_flush_threshold,
             summarizer=summarizer,
             max_tokens=self.config.l2_max_tokens,
+            reconciler=reconciler,
         )
         # L0 跨会话核心记忆
         self.playbook = PlaybookStore(self.config.playbook_path())
+        # L3 检索缓冲(纯内存,不持久化)
+        self.recall_buffer = RecallBuffer(self.config)
         # 冲突检测器: 显式传入优先,否则按 config.conflict_strength 自动构造
         self.conflict_detector = (
             conflict_detector
@@ -108,6 +121,7 @@ class MemoryManager:
         # 后者如果再次需要锁不会自死锁
         self._lock = threading.RLock()
         self._turn_counter = 0
+        self._last_reflect_turn = 0       # 上次 L2 反思发生的轮次
         self._pending_tick: Optional[Future] = None
         self._executor: Optional[ThreadPoolExecutor] = None
         if self.config.tick_mode == "async":
@@ -351,14 +365,46 @@ class MemoryManager:
             if not new_item.pinned and should_auto_pin(new_item.prior_score):
                 new_item.pinned = True
 
+        superseded_contents: List[str] = []
         for old_id in superseded_ids:
             old = self.semantic.get(old_id) or self.working.get(old_id)
             if old is None or not old.is_active:
                 continue
             old.superseded_by = new_item.id
             new_item.supersedes.append(old_id)
+            superseded_contents.append(old.content)
             # ★ L0 反哺: 如果该旧项有对应的 L0 卡片,按 type 不同幅度 negate
             self._negate_l0_cards_for(old_id)
+
+        # ★ L2 冲突扳机: 现实变了 → 立即校正摘要(分层托管)
+        if superseded_contents:
+            self._reconcile_summary_on_conflict(new_item, superseded_contents)
+
+    def _reconcile_summary_on_conflict(
+        self, new_item: MemoryItem, old_contents: List[str]
+    ) -> None:
+        """supersede 发生时,联动校正 L2 摘要 —— 把"旧→新"的变更交给 reconciler。"""
+        if self.summary.current_summary() is None:
+            return
+        old_joined = " | ".join(old_contents)
+        signal = (
+            f"状态变更: 旧信息「{old_joined}」已被新信息「{new_item.content}」取代。"
+            "请更新摘要 —— 稳定事实保留,当前状态以新信息为准。"
+        )
+        self.summary.reconcile(signal)
+
+    def _reflect_on_summary(self) -> None:
+        """L2 定期反思: 对照最近对话主动复查摘要,修正过期/矛盾内容。"""
+        if self.summary.current_summary() is None:
+            return
+        recent = [it.content for it in self.working.items()[-5:] if it.is_active]
+        if not recent:
+            return
+        signal = (
+            "定期复查: 对照下面的最近对话,修正摘要中已过期或自相矛盾的内容,"
+            "稳定事实保留。最近对话:\n" + "\n".join(f"- {c}" for c in recent)
+        )
+        self.summary.reconcile(signal)
 
     def _negate_l0_cards_for(self, item_id: str) -> None:
         """某条 memory item 被 supersede 时,联动 negate 它产生的 L0 卡片。
@@ -559,19 +605,41 @@ class MemoryManager:
         return inter / union if union else 0.0
 
     def _compose_passive_recall(self, query: str, k: int) -> str:
-        """被动 recall:系统主动调 L5,命中即 touch + 高分立即 pin。"""
+        """被动 recall:系统主动调 L5,命中登记进 L3 缓冲,再从 L3 注入。
+
+        与旧版区别:命中不再"用完即弃",而是写入 L3 台账累计热度。
+        反复命中的项由 tick 的 _maybe_promote_from_l3 晋升进 L1。
+        """
+        # recall() 走向量检索(可能 I/O),放锁外;只有 L3 缓冲的读写需要加锁,
+        # 因为异步 tick 的 _maybe_promote_from_l3 会并发改同一个 buffer。
         try:
             hits = self.recall(query, k=k)
         except Exception as exc:
             print(f"⚠️ 被动 recall 失败,跳过: {exc}")
-            return ""
-        if not hits:
-            return ""
+            hits = []
+        with self._lock:
+            self.recall_buffer.evict_expired(self._turn_counter)
+            for item, score in hits:
+                # 高分且未 pinned → 立即 pin(用户 query 相关 = 这条该被保护)
+                if not item.pinned and score >= 0.6:
+                    item.pinned = True
+                self.recall_buffer.record_hit(item.id, score, self._turn_counter)
+            return self._compose_l3_injection()
+
+    def _compose_l3_injection(self) -> str:
+        """把当前 L3 台账渲染成注入文本(原文从 L5 取)。
+
+        跳过已在 L1 的项 —— 它们已由 L1 原文段注入,避免重复
+        (例如被 importance 召回路径加回 L1 但还没从 L3 清掉的项)。
+        """
+        l1_ids = {it.id for it in self.working.items()}
         lines: List[str] = []
-        for item, score in hits:
-            # 高分且未 pinned → 立即 pin(用户 query 相关 = 这条该被保护)
-            if not item.pinned and score >= 0.6:
-                item.pinned = True
+        for entry in self.recall_buffer.entries():
+            if entry.item_id in l1_ids:
+                continue
+            item = self.semantic.get(entry.item_id)
+            if item is None or not item.is_active:
+                continue
             preview = item.content[:120]
             lines.append(f"- [{item.role}] {preview}")
         return "\n".join(lines)
@@ -789,18 +857,58 @@ class MemoryManager:
                 self.working.add(item)
                 recalled.append(item.id)
 
-        if recalled:
+        # L3 → L1: 反复命中的检索项晋升回现场(高阈值)
+        l3_promoted = self._maybe_promote_from_l3()
+
+        if recalled or l3_promoted:
             self._cascade_evict_from_l1()
 
         # 实绩毕业: 久经考验的 L1 项晋升 L0(跨会话保留)
         graduated = self._maybe_graduate_to_l0()
 
+        # L2 定期反思扳机: 距上次反思满 N 轮就触发。
+        # 用"距上次"而非 _turn_counter % N —— 后者会被 tick_every_n_turns
+        # 节流吞掉(只在 _tick_impl 实际执行的轮里判断,可能错过整除点)。
+        reflect_n = self.config.l2_reflect_every_n_turns
+        if reflect_n > 0 and self._turn_counter - self._last_reflect_turn >= reflect_n:
+            self._last_reflect_turn = self._turn_counter
+            self._reflect_on_summary()
+
         return {
             "promoted": promoted,
             "demoted": demoted,
             "recalled": recalled,
+            "l3_promoted": l3_promoted,
             "graduated": graduated,
         }
+
+    def _maybe_promote_from_l3(self) -> List[str]:
+        """L3 缓冲里反复命中的项晋升回 L1。
+
+        与 L5→L1 召回(上面那段)的区别:
+        - L5→L1 看 importance(综合热度),覆盖所有 L5 项。
+        - L3→L1 看"被动 recall 跨轮命中次数",只针对当前正反复用到的检索项。
+          这些是"借来的参考资料反复要用 = 已重新参与对话",该恢复完整原文。
+
+        晋升即从 L3 移除,避免和 L1 重复注入。
+        """
+        promoted: List[str] = []
+        l1_ids = {it.id for it in self.working.items()}
+        candidates = self.recall_buffer.promotable(
+            min_hits=self.config.l3_promote_min_hits,
+            min_score=self.config.l3_promote_min_score,
+        )
+        for entry in candidates:
+            item = self.semantic.get(entry.item_id)
+            # 真身没了 / 已被取代 / 已在 L1 → 直接从台账撤掉
+            if item is None or not item.is_active or item.id in l1_ids:
+                self.recall_buffer.remove(entry.item_id)
+                continue
+            item.pinned = True
+            self.working.add(item)
+            self.recall_buffer.remove(entry.item_id)
+            promoted.append(item.id)
+        return promoted
 
     # ── 异步 tick 的辅助 API ───────────────────────────────
     def wait_for_tick(self, timeout: Optional[float] = None) -> Optional[Dict]:
@@ -828,7 +936,9 @@ class MemoryManager:
         self.working = WorkingMemory(self.config)
         self.tiers[self.working.name] = self.working
         self.summary.clear()
+        self.recall_buffer = RecallBuffer(self.config)
         self._turn_counter = 0
+        self._last_reflect_turn = 0
 
     def stats(self) -> Dict[str, int]:
         summary = self.summary.current_summary()
@@ -836,6 +946,7 @@ class MemoryManager:
             "l1_items": len(self.working.items()),
             "l1_tokens": self.working.total_tokens(),
             "l2_tokens": summary.token_estimate if summary else 0,
+            "l3_entries": len(self.recall_buffer),
             "l4_items": self.cold.count(),
             "l5_items": len(self.semantic.items()),
         }

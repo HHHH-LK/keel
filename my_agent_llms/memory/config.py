@@ -26,6 +26,15 @@ class MemoryConfig(BaseModel):
     l1_recent_turns: int = 6
     l2_max_tokens: int = 1000
 
+    # ── L2 分层托管(摘要纠错) ─────────────────────────────
+    l2_reflect_every_n_turns: int = 5  # 每 N 轮定期反思校正摘要(0 = 关)
+
+    # ── L3 检索缓冲 ────────────────────────────────────────
+    l3_ttl_turns: int = 3          # 距上次命中超过 N 轮 → 过期移除
+    l3_max_entries: int = 20       # 台账容量上限,超了淘汰最低分
+    l3_promote_min_hits: int = 3   # 累计命中达此次数才够格晋升 L1
+    l3_promote_min_score: float = 0.6  # 且最近命中分须 >= 此值
+
     # ── 热度 / 升降级 ───────────────────────────────────────
     promote_threshold: float = 0.7
     demote_threshold: float = 0.3
