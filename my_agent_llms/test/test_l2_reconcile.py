@@ -125,6 +125,25 @@ def test_reflection_off_when_zero():
     assert len(calls) == 0
 
 
+def test_l2_injection_marked_low_authority():
+    """L2 摘要注入时标注为低权威背景,事实以 L0/KG 为准。"""
+    mgr = MemoryManager(MemoryConfig())
+    mgr.summary._set_summary_text("我们聊过推荐系统选型,倾向方案 B")
+    messages = mgr.assemble_context("sys")
+    joined = "\n".join(m["content"] for m in messages if m["role"] == "system")
+    assert "推荐系统选型" in joined          # 摘要内容还在
+    assert "为准" in joined                   # 但被标注:冲突以 L0/KG 为准
+
+
+def test_reconciler_prompt_defers_facts_to_l0():
+    """LLMReconciler 的 prompt 明确把离散事实划归 L0,且禁止凭'最近没提'删除。"""
+    from my_agent_llms.memory.summary import LLMReconciler
+    rec = LLMReconciler(llm=None)
+    p = rec.prompt
+    assert "L0" in p                          # 事实归 L0
+    assert "删除" in p and "明确矛盾" in p      # 保守删除: 仅明确矛盾才删
+
+
 if __name__ == "__main__":
     funcs = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     passed = 0

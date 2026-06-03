@@ -471,10 +471,19 @@ class MemoryManager:
                 ),
             })
 
-        # ── L2 全局摘要 ──
+        # ── L2 全局摘要(背景叙事,最低权威) ──
         summary = self.summary.current_summary()
         if summary is not None:
-            messages.append(summary.to_message_dict())
+            messages.append({
+                "role": "system",
+                "content": (
+                    "## 对话梗概(背景叙事)\n"
+                    "仅用于理解上下文脉络。关于用户的具体事实"
+                    "(身份/偏好/约束/当前状态)以上文 L0 核心信息与 KG 事实为准;"
+                    "本段与之冲突时一律以 L0/KG 为准。\n\n"
+                    + summary.content
+                ),
+            })
 
         # ── KG facts (默认注入) ──
         if effective_query:
