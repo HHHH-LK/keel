@@ -67,6 +67,35 @@ def test_normalize_predicate_unknown_defaults_to_multi():
     assert cardinality == kg_vocab.CARDINALITY_MULTI
 
 
+# ── 通用编程智能体词表:单值核心 + 多值常见 + 同义词 ──
+
+def test_coding_single_valued_predicates():
+    """单值核心(环境/技术栈/项目/身份)—— 必须 single 才会 supersede。"""
+    for p in ["主力语言", "操作系统", "当前项目", "现任雇主", "经验水平",
+              "当前重点", "时区", "shell"]:
+        _, card = kg_vocab.normalize_predicate(p)
+        assert card == kg_vocab.CARDINALITY_SINGLE, p
+
+
+def test_coding_multi_valued_predicates():
+    """多值:能同时有很多个 —— 绝不能 supersede。"""
+    for p in ["使用", "会", "喜欢", "讨厌", "习惯", "维护", "关注", "过敏"]:
+        _, card = kg_vocab.normalize_predicate(p)
+        assert card == kg_vocab.CARDINALITY_MULTI, p
+
+
+def test_coding_synonyms_normalize():
+    assert kg_vocab.normalize_predicate("改用")[0] == "主力语言"
+    assert kg_vocab.normalize_predicate("就职于")[0] == "现任雇主"
+    assert kg_vocab.normalize_predicate("在做的项目")[0] == "当前项目"
+    assert kg_vocab.normalize_predicate("约定")[0] == "习惯"
+    assert kg_vocab.normalize_predicate("不想用")[0] == "讨厌"
+
+
+def test_scope_open_source():
+    assert kg_vocab.normalize_scope("开源项目") == "开源"
+
+
 # ─────────────────────────────────────────────
 # Task 1.2: 谓词基数 → 多值不 supersede(安全关键)
 # ─────────────────────────────────────────────
