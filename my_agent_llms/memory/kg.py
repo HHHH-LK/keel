@@ -339,8 +339,11 @@ class KGStore:
         return hits
 
     def remove_pending(self, rel_data: dict) -> None:
+        self.remove_pending_key(self.pending_key(rel_data))
+
+    def remove_pending_key(self, triple_key: str) -> None:
         self.conn.execute(
-            "DELETE FROM kg_pending WHERE triple_key=?", (self.pending_key(rel_data),)
+            "DELETE FROM kg_pending WHERE triple_key=?", (triple_key,)
         )
         self.conn.commit()
 
