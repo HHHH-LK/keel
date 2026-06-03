@@ -94,6 +94,31 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 # ── SQLite 存储 ────────────────────────────────────────────
 
+# 纯应答词:这些整句就该跳过抽取(没事实可抽)
+_ACK_ONLY = {
+    "嗯", "嗯嗯", "哦", "噢", "好", "好的", "好滴", "好吧", "行", "行吧",
+    "ok", "okay", "谢谢", "多谢", "收到", "明白", "懂了", "知道了",
+    "是的", "对", "对的", "没错", "哈哈", "呵呵", "可以", "👍",
+}
+
+
+def should_extract(content: str) -> bool:
+    """保守门控:只挡空消息 / 纯标点 / 纯应答词,绝不按"信息量"砍真事实。
+
+    目的是省 worker 的抽取调用,但宁可多抽也不漏 —— 短句"我住上海"必须放行。
+    """
+    text = (content or "").strip()
+    if not text:
+        return False
+    # 纯标点/表情:没有字母数字也没有中文 → 跳过
+    if not any(c.isalnum() or "一" <= c <= "鿿" for c in text):
+        return False
+    # 整句就是一个应答词 → 跳过
+    if text.lower() in _ACK_ONLY:
+        return False
+    return True
+
+
 # user 自指:subject 是这些时,grounding 不要求字面出现在原文
 _USER_SELF = {"user", "我", "我的", "自己", "本人", "咱"}
 
@@ -747,6 +772,9 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         抽取时把最近 context_window 条 L1 消息作为上下文喂给 LLM,
         用于推断隐含的 scope("我刚才在聊工作,现在说用 Python" → scope=工作)。
         """
+        # 门控:空消息/纯应答直接不抽,省 LLM 调用
+        if not should_extract(new_item.content):
+            return []
         # 收集最近上下文(排除当前项)
         context_hint = self._build_context_hint(new_item, manager)
         relations_data = _extract_relations_via_llm(

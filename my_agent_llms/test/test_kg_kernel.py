@@ -5,7 +5,12 @@
 from datetime import datetime
 
 from my_agent_llms.memory import kg_vocab
-from my_agent_llms.memory.kg import KGStore, KnowledgeGraphConflictDetector, is_grounded
+from my_agent_llms.memory.kg import (
+    KGStore,
+    KnowledgeGraphConflictDetector,
+    is_grounded,
+    should_extract,
+)
 
 
 def _detector():
@@ -322,3 +327,28 @@ def test_pending_promotes_after_repeated_evidence():
     )
     assert _active_objects(d) == {"Python"}          # 第二次累积到 2 → 晋升
     assert d.store.pending_entries() == []
+
+
+# ─────────────────────────────────────────────
+# Task 2.4: 保守门控(只挡空消息/纯应答,不漏真事实)
+# ─────────────────────────────────────────────
+
+def test_should_extract_real_content():
+    assert should_extract("我喜欢 Python") is True
+
+
+def test_should_extract_short_fact_not_dropped():
+    """短但有事实的句子不能被门控误杀。"""
+    assert should_extract("我住上海") is True
+
+
+def test_should_skip_pure_acknowledgment():
+    assert should_extract("嗯") is False
+    assert should_extract("好的") is False
+    assert should_extract("OK") is False
+
+
+def test_should_skip_empty_and_punctuation():
+    assert should_extract("") is False
+    assert should_extract("   ") is False
+    assert should_extract("。。。") is False
