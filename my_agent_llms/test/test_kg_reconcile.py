@@ -7,8 +7,16 @@
 import json
 from datetime import datetime, timedelta
 
+from my_agent_llms.memory import MemoryConfig, MemoryManager
 from my_agent_llms.memory.kg import KGStore, Relation
 from my_agent_llms.memory.kg_reconcile import KGReconciler
+
+
+class _SpyLLM:
+    """构造 extreme KG detector 用的最小 llm(抽取返回空)。"""
+
+    def invoke(self, messages):
+        return "[]"
 
 
 class FakeLLM:
@@ -116,3 +124,49 @@ def test_no_llm_skips_semantic_pass():
     report = r.reconcile(now=datetime(2025, 3, 1))
     assert "conflicts_resolved" not in report
     assert len(store.find_active_relations_for_entity("user")) == 2
+
+
+# ─────────────────────────────────────────────
+# Stage 3: 接线到 manager.tick
+# ─────────────────────────────────────────────
+
+def test_no_reconciler_when_not_kg_mode():
+    """非 KG 模式(off/fast)→ 不建 reconciler。"""
+    mgr = MemoryManager(MemoryConfig(conflict_strength="off"))
+    assert mgr._kg_reconciler is None
+
+
+def test_tick_triggers_reconcile_on_cadence():
+    """tick 每满 kg_reconcile_every_n_turns 轮触发一次 reconcile。"""
+    cfg = MemoryConfig(
+        conflict_strength="extreme",
+        kg_reconcile_every_n_turns=3,
+        tick_mode="sync", tick_every_n_turns=1,
+        l2_reflect_every_n_turns=0,
+    )
+    mgr = MemoryManager(cfg, llm=_SpyLLM())
+    assert mgr._kg_reconciler is not None
+
+    calls = []
+    mgr._kg_reconciler.reconcile = lambda now=None: calls.append(1) or {}
+    for _ in range(6):
+        mgr.tick()
+    assert len(calls) == 2   # 第 3、6 轮触发
+
+
+def test_tick_runs_pending_gc_end_to_end():
+    """端到端:陈旧 pending 经 tick 的冷回路被 GC。"""
+    cfg = MemoryConfig(
+        conflict_strength="extreme",
+        kg_reconcile_every_n_turns=1,
+        tick_mode="sync", tick_every_n_turns=1,
+        l2_reflect_every_n_turns=0,
+    )
+    mgr = MemoryManager(cfg, llm=_SpyLLM())
+    store = mgr.conflict_detector.store
+    store.record_pending(
+        _rel("user", "想学", "Rust"), reason="inferred",
+        source_item_id="i1", now=datetime(2020, 1, 1),   # 远古 → 超 TTL
+    )
+    mgr.tick()
+    assert store.pending_entries() == []

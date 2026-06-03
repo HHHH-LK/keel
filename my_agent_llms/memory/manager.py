@@ -109,6 +109,10 @@ class MemoryManager:
             )
         )
 
+        # KG 冷回路:仅当冲突检测器是知识图谱型(extreme)时才建。
+        # 先传 llm=None → 只跑确定性 pending GC;语义冲突等有可用 llm 再开。
+        self._kg_reconciler = self._build_kg_reconciler()
+
         self.tiers: Dict[str, MemoryTier] = {
             self.working.name: self.working,
             self.summary.name: self.summary,
@@ -122,6 +126,7 @@ class MemoryManager:
         self._lock = threading.RLock()
         self._turn_counter = 0
         self._last_reflect_turn = 0       # 上次 L2 反思发生的轮次
+        self._last_reconcile_turn = 0     # 上次 KG 冷回路发生的轮次
         self._pending_tick: Optional[Future] = None
         self._executor: Optional[ThreadPoolExecutor] = None
         if self.config.tick_mode == "async":
@@ -187,6 +192,17 @@ class MemoryManager:
             return KnowledgeGraphConflictDetector(llm, store, embedder=self.embedding)
 
         return None
+
+    def _build_kg_reconciler(self):
+        """仅当冲突检测器是 KG 型时,基于它的 store 建冷回路 reconciler。
+
+        先传 llm=None → 只跑确定性 pending GC(语义冲突那段需可用 llm,后续再开)。
+        """
+        from my_agent_llms.memory.kg import KnowledgeGraphConflictDetector
+        if not isinstance(self.conflict_detector, KnowledgeGraphConflictDetector):
+            return None
+        from my_agent_llms.memory.kg_reconcile import KGReconciler
+        return KGReconciler(self.conflict_detector.store, llm=None)
 
     # ── L0 公开 API ────────────────────────────────────────
     def remember(
@@ -884,6 +900,19 @@ class MemoryManager:
             self._last_reflect_turn = self._turn_counter
             self._reflect_on_summary()
 
+        # KG 冷回路扳机: 同样用"距上次满 N 轮"触发(避免被 tick 节流吞掉整除点)
+        recon_n = self.config.kg_reconcile_every_n_turns
+        if (
+            self._kg_reconciler is not None
+            and recon_n > 0
+            and self._turn_counter - self._last_reconcile_turn >= recon_n
+        ):
+            self._last_reconcile_turn = self._turn_counter
+            try:
+                self._kg_reconciler.reconcile()
+            except Exception as exc:
+                print(f"⚠️ KG 冷回路失败,跳过: {exc}")
+
         return {
             "promoted": promoted,
             "demoted": demoted,
@@ -949,6 +978,7 @@ class MemoryManager:
         self.recall_buffer = RecallBuffer(self.config)
         self._turn_counter = 0
         self._last_reflect_turn = 0
+        self._last_reconcile_turn = 0
 
     def stats(self) -> Dict[str, int]:
         summary = self.summary.current_summary()

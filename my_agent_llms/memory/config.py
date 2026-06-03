@@ -29,6 +29,9 @@ class MemoryConfig(BaseModel):
     # ── L2 分层托管(摘要纠错) ─────────────────────────────
     l2_reflect_every_n_turns: int = 5  # 每 N 轮定期反思校正摘要(0 = 关)
 
+    # ── KG 冷回路 reconcile ────────────────────────────────
+    kg_reconcile_every_n_turns: int = 20  # 每 N 轮跑一次 KG 冷回路(pending GC + 语义冲突;0 = 关)
+
     # ── L3 检索缓冲 ────────────────────────────────────────
     l3_ttl_turns: int = 3          # 距上次命中超过 N 轮 → 过期移除
     l3_max_entries: int = 20       # 台账容量上限,超了淘汰最低分
