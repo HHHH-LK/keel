@@ -10,6 +10,8 @@ DEFAULT_LIMIT = 2000
 
 
 class ReadFile(Tool):
+    side_effect_free = True  # 纯读文件,无写 → 可并行
+
     def __init__(self, workspace: Workspace):
         super().__init__(
             name="Read",

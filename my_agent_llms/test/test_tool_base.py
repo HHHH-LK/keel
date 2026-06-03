@@ -30,6 +30,18 @@ def test_subclass_can_override_requires_approval():
     assert WriteLike().requires_approval is True
 
 
+def test_default_side_effect_free_is_false():
+    """默认保守 = 不可并行,除非工具显式声明纯读。"""
+    t = _Dummy()
+    assert t.side_effect_free is False
+
+
+def test_subclass_can_override_side_effect_free():
+    class ReadLike(_Dummy):
+        side_effect_free = True
+    assert ReadLike().side_effect_free is True
+
+
 def test_subclass_can_override_preview():
     class WriteLike(_Dummy):
         def preview_for_approval(self, parameters: Dict[str, Any]) -> str:

@@ -13,6 +13,8 @@ MANIFEST_NAME = "MANIFEST.json"
 
 
 class ListDir(Tool):
+    side_effect_free = True  # 纯读目录/stat,无写 → 可并行
+
     def __init__(self, workspace: Workspace):
         super().__init__(
             name="LS",

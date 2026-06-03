@@ -17,6 +17,9 @@ class Tool(ABC):
     """工具基类"""
 
     requires_approval: bool = False
+    # 白名单标记:仅纯读/纯计算/无任何写集合的工具才置 True,允许同一轮并行执行。
+    # 默认保守 False(碰 DB/文件/进程内状态/外部副作用/对人 IO 一律算有副作用)。
+    side_effect_free: bool = False
 
     def __init__(self, name: str, description: str):
         self.name = name

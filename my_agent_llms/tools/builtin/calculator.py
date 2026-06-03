@@ -67,6 +67,8 @@ def calculate(expression: str) -> str:
 class CalculatorTool(Tool):
     """支持 +-*/、幂、取模、sqrt/log/sin/cos/tan 与 pi/e 常量。"""
 
+    side_effect_free = True  # 纯计算,无副作用 → 可并行
+
     def __init__(self):
         super().__init__(
             name="calculator",

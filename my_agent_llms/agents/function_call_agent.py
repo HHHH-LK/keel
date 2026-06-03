@@ -47,6 +47,7 @@ class MyFunctionCallAgent(Agent):
                  system_prompt: Optional[str] = None,
                  config: Optional[Config] = None,
                  max_steps: int = 5,
+                 tool_timeout: Optional[float] = None,
                  **kwargs):
         super().__init__(name, llm, system_prompt, config, **kwargs)
         if llm.provider not in MyLLM.OPENAI_COMPATIBLE_PROVIDERS:
@@ -55,6 +56,9 @@ class MyFunctionCallAgent(Agent):
             )
         self.tool_registry = tool_registry
         self.max_steps = max_steps
+        # 单工具执行超时(秒)。None = 不限。超时只"放弃等待"并回喂文案,
+        # 不强杀线程(Python 线程杀不掉;后台线程会继续跑到自己结束)。
+        self.tool_timeout = tool_timeout
         self.last_tool_call_count = 0  # chat 层读取用作 meta
         self._install_memory_tools(self.tool_registry)
 
@@ -122,54 +126,12 @@ class MyFunctionCallAgent(Agent):
                 ],
             })
 
-            for tc in tool_calls:
-                tool_name = tc.function.name
-                args = self._parse_function_call_arguments(tc.function.arguments)
-                args = self._convert_parameter_types(tool_name, args)
-                if on_tool_call is not None:
-                    try:
-                        on_tool_call(tool_name, args)
-                    except Exception:
-                        logger.exception("on_tool_call 回调异常,忽略不影响主流程")
-
-                # ── 审批检查:仅当工具声明 requires_approval 且 chat 层传了 callback ──
-                tool_obj = self.tool_registry.get_tool(tool_name)
-                if (tool_obj is not None
-                        and getattr(tool_obj, "requires_approval", False)
-                        and on_permission_request is not None):
-                    try:
-                        preview = tool_obj.preview_for_approval(args)
-                    except Exception:
-                        logger.exception("preview_for_approval 异常,降级为 repr")
-                        preview = repr(args)
-                    try:
-                        allowed = on_permission_request(tool_name, args, preview)
-                    except Exception:
-                        logger.exception("on_permission_request 异常,默认拒绝")
-                        allowed = False
-                    if not allowed:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": f"用户拒绝了对 {tool_name} 的调用",
-                        })
-                        tool_call_count += 1  # 算一次"尝试"
-                        continue
-
-                tool_call_count += 1
-                t_tool = time.monotonic()
-                result = self.tool_registry.execute_tool(tool_name, args)
-                tool_elapsed = time.monotonic() - t_tool
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": str(result),
-                })
-                if on_tool_result is not None:
-                    try:
-                        on_tool_result(tool_name, str(result), tool_elapsed)
-                    except Exception:
-                        logger.exception("on_tool_result 回调异常,忽略不影响主流程")
+            tool_call_count += self._execute_tool_calls(
+                tool_calls, messages,
+                on_tool_call=on_tool_call,
+                on_permission_request=on_permission_request,
+                on_tool_result=on_tool_result,
+            )
 
         if not final_response:
             t_llm = time.monotonic()
@@ -209,6 +171,146 @@ class MyFunctionCallAgent(Agent):
         self.last_tool_call_count = tool_call_count
         logger.debug(f"{self.name} 响应完成")
         return final_response
+
+    def _tool_is_side_effect_free(self, name: str) -> bool:
+        """白名单判定:仅 Tool.side_effect_free=True 的才允许并行。
+        轻量函数工具(无 Tool 对象)与未标记的一律按有副作用处理 → 串行。"""
+        tool = self.tool_registry.get_tool(name)
+        return bool(getattr(tool, "side_effect_free", False))
+
+    @staticmethod
+    def _tool_timeout_message(name: str, timeout: float) -> str:
+        return (f"⏱️ 工具 '{name}' 执行超时(>{timeout}s),已放弃等待;"
+                f"线程可能仍在后台运行,其结果将被忽略。")
+
+    def _run_single_tool(self, name: str, args: Any, timeout: Optional[float] = None):
+        """执行单个工具,返回 (result, elapsed_sec)。
+
+        timeout 非 None 时,超过即放弃等待并返回超时文案。底层线程不被强杀
+        (shutdown(wait=False)),会在后台继续跑完,但其返回值被忽略。
+        """
+        t = time.monotonic()
+        if timeout is None:
+            result = self.tool_registry.execute_tool(name, args)
+            return result, time.monotonic() - t
+
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        ex = ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(self.tool_registry.execute_tool, name, args)
+        try:
+            result = fut.result(timeout=timeout)
+        except FuturesTimeout:
+            result = self._tool_timeout_message(name, timeout)
+        finally:
+            ex.shutdown(wait=False)
+        return result, time.monotonic() - t
+
+    def _execute_tool_calls(self,
+                            tool_calls,
+                            messages: List[Dict[str, Any]],
+                            *,
+                            on_tool_call: Optional[ToolCallCallback],
+                            on_permission_request: Optional[PermissionCallback],
+                            on_tool_result: Optional[ToolResultCallback]) -> int:
+        """同一轮多个 tool_call 的三阶段调度,返回"尝试次数"(含被拒绝)。
+
+        A. 串行(原顺序):parse/类型转换/on_tool_call/审批,产出执行计划。
+        B. 执行:side_effect_free 工具并行(线程池),其余按原顺序串行。
+        C. 串行(原顺序):结果按 tool_call_id 原顺序回填 messages + on_tool_result 上报。
+
+        审批是对人 IO,必须在 A 阶段串行、按序进行;并行只发生在 B 阶段且仅限白名单工具。
+        """
+        # ── Phase A:串行产出计划 ──
+        plans: List[Dict[str, Any]] = []
+        attempts = 0
+        for tc in tool_calls:
+            name = tc.function.name
+            args = self._parse_function_call_arguments(tc.function.arguments)
+            args = self._convert_parameter_types(name, args)
+            if on_tool_call is not None:
+                try:
+                    on_tool_call(name, args)
+                except Exception:
+                    logger.exception("on_tool_call 回调异常,忽略不影响主流程")
+
+            plan = {"tc": tc, "name": name, "args": args,
+                    "result": None, "elapsed": 0.0, "execute": True, "report": True}
+
+            tool_obj = self.tool_registry.get_tool(name)
+            if (tool_obj is not None
+                    and getattr(tool_obj, "requires_approval", False)
+                    and on_permission_request is not None):
+                try:
+                    preview = tool_obj.preview_for_approval(args)
+                except Exception:
+                    logger.exception("preview_for_approval 异常,降级为 repr")
+                    preview = repr(args)
+                try:
+                    allowed = on_permission_request(name, args, preview)
+                except Exception:
+                    logger.exception("on_permission_request 异常,默认拒绝")
+                    allowed = False
+                if not allowed:
+                    plan["result"] = f"用户拒绝了对 {name} 的调用"
+                    plan["execute"] = False
+                    plan["report"] = False  # 被拒绝不算一次真正执行,不上报 on_tool_result
+                    attempts += 1
+            plans.append(plan)
+
+        # ── Phase B:执行。白名单并行,其余按原顺序串行 ──
+        timeout = getattr(self, "tool_timeout", None)
+        to_exec = [p for p in plans if p["execute"]]
+        serial = [p for p in to_exec if not self._tool_is_side_effect_free(p["name"])]
+        parallel = [p for p in to_exec if self._tool_is_side_effect_free(p["name"])]
+
+        for p in serial:
+            p["result"], p["elapsed"] = self._run_single_tool(p["name"], p["args"], timeout)
+            attempts += 1
+
+        if parallel:
+            from concurrent.futures import (
+                ThreadPoolExecutor, as_completed, wait as futures_wait)
+            ex = ThreadPoolExecutor(max_workers=min(len(parallel), 8))
+            t0 = time.monotonic()
+            futs = {ex.submit(self.tool_registry.execute_tool, p["name"], p["args"]): p
+                    for p in parallel}
+            try:
+                if timeout is None:
+                    for fut in as_completed(futs):
+                        p = futs[fut]
+                        p["result"] = fut.result()
+                        p["elapsed"] = time.monotonic() - t0
+                else:
+                    # 整批共享一个 deadline(它们同时起跑);未完成的回喂超时文案,
+                    # 不强杀,不等待——慢工具不阻塞已完成的快工具。
+                    done, _not_done = futures_wait(futs, timeout=timeout)
+                    for fut, p in futs.items():
+                        if fut in done:
+                            try:
+                                p["result"] = fut.result()
+                            except Exception as e:
+                                p["result"] = f"❌ 工具 '{p['name']}' 执行异常: {e}"
+                        else:
+                            p["result"] = self._tool_timeout_message(p["name"], timeout)
+                        p["elapsed"] = time.monotonic() - t0
+            finally:
+                ex.shutdown(wait=False)
+            attempts += len(parallel)
+
+        # ── Phase C:按原顺序回填 + 上报 ──
+        for p in plans:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": p["tc"].id,
+                "content": str(p["result"]),
+            })
+            if p["report"] and on_tool_result is not None:
+                try:
+                    on_tool_result(p["name"], str(p["result"]), p["elapsed"])
+                except Exception:
+                    logger.exception("on_tool_result 回调异常,忽略不影响主流程")
+
+        return attempts
 
     def _build_tool_schemas(self) -> List[Dict[str, Any]]:
         return self.tool_registry.to_openai_schemas()

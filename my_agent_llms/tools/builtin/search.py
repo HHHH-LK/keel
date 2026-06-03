@@ -14,6 +14,8 @@ class SearchTool(Tool):
     3. SerpApi (serpapi) - 传统Google搜索
     """
 
+    side_effect_free = True  # 只读网络查询,无本地副作用 → 可并行
+
     def __init__(self, backend: str = "hybrid", tavily_key: Optional[str] = None, serpapi_key: Optional[str] = None):
         super().__init__(
             name="search",
