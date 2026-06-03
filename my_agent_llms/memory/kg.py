@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from my_agent_llms.memory.conflict import ConflictDetector
 from my_agent_llms.memory.embeddings import _tokenize
+from my_agent_llms.memory.kg_vocab import CARDINALITY_SINGLE, normalize_predicate
 
 if TYPE_CHECKING:
     from my_agent_llms.memory.item import MemoryItem
@@ -564,8 +565,27 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         )
         if not relations_data:
             return []
+        return self.apply_extracted_relations(
+            relations_data, source_item_id=new_item.id,
+        )
 
-        now = datetime.now()
+    def apply_extracted_relations(
+        self,
+        relations_data: list,
+        source_item_id: Optional[str],
+        *,
+        now: Optional[datetime] = None,
+    ) -> List[str]:
+        """把已抽取的关系做归一化 + 基数判定 + 冲突处置,入库。
+
+        与 find_superseded 分离 —— 这一段是纯确定性逻辑(不碰 LLM/manager),
+        便于单测。返回被取代的旧 MemoryItem ID 列表。
+
+        基数门控(安全关键):
+        - 单值谓词(现居地/主力语言…)→ 新值取代同 (subject, 谓词, scope) 的旧值
+        - 多值谓词(过敏/会…)→ 只追加,绝不取代(否则"对花生过敏"会被"对牛奶过敏"删掉)
+        """
+        now = now or datetime.now()
         superseded_item_ids: set = set()
 
         for rel_data in relations_data:
@@ -580,27 +600,27 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
                 print(f"⚠️ KG 实体写入失败,跳过该关系: {exc}")
                 continue
 
-            predicate = rel_data.get("predicate", "")
-            scope = rel_data.get("scope", "") or ""
-            if not predicate:
+            raw_predicate = rel_data.get("predicate", "")
+            if not raw_predicate:
                 continue
+            # 归一谓词 → canonical + 基数;scope 仍原样(scope 归一在 Task 1.4)
+            predicate, cardinality = normalize_predicate(raw_predicate)
+            scope = rel_data.get("scope", "") or ""
 
-            # 查冲突关系
-            conflicts = self.store.find_conflicts(
-                subject_id=subject_id,
-                predicate=predicate,
-                scope=scope,
-                exclude_object_id=object_id,
-                at_time=now,
-            )
+            # 仅单值谓词做冲突取代;多值谓词只追加
+            if cardinality == CARDINALITY_SINGLE:
+                conflicts = self.store.find_conflicts(
+                    subject_id=subject_id,
+                    predicate=predicate,
+                    scope=scope,
+                    exclude_object_id=object_id,
+                    at_time=now,
+                )
+                for old_rel in conflicts:
+                    self.store.supersede_relation(old_rel.id, now)
+                    if old_rel.source_item_id:
+                        superseded_item_ids.add(old_rel.source_item_id)
 
-            # 旧关系失效
-            for old_rel in conflicts:
-                self.store.supersede_relation(old_rel.id, now)
-                if old_rel.source_item_id:
-                    superseded_item_ids.add(old_rel.source_item_id)
-
-            # 新关系入库
             new_rel = Relation(
                 id=uuid.uuid4().hex[:12],
                 subject_id=subject_id,
@@ -608,7 +628,7 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
                 object_id=object_id,
                 scope=scope,
                 valid_from=now,
-                source_item_id=new_item.id,
+                source_item_id=source_item_id,
                 confidence=1.0,
             )
             self.store.add_relation(new_rel)
