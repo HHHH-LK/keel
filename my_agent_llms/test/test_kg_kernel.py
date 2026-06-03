@@ -5,7 +5,7 @@
 from datetime import datetime
 
 from my_agent_llms.memory import kg_vocab
-from my_agent_llms.memory.kg import KGStore, KnowledgeGraphConflictDetector
+from my_agent_llms.memory.kg import KGStore, KnowledgeGraphConflictDetector, is_grounded
 
 
 def _detector():
@@ -250,3 +250,26 @@ def test_remove_pending():
     store.record_pending(_rel("user", "想学", "Rust"), reason="inferred", source_item_id="i1")
     store.remove_pending(_rel("user", "想学", "Rust"))
     assert store.pending_entries() == []
+
+
+# ─────────────────────────────────────────────
+# Task 2.2: grounding 校验
+# ─────────────────────────────────────────────
+
+def test_grounded_object_in_text():
+    assert is_grounded(_rel("user", "喜欢", "Python"), "我喜欢 Python") is True
+
+
+def test_ungrounded_object_not_in_text():
+    """object 没在原文出现 → 不 grounded(防幻觉:咖啡≠拿铁)。"""
+    assert is_grounded(_rel("user", "喜欢", "拿铁"), "我喜欢喝咖啡") is False
+
+
+def test_user_self_subject_exempt():
+    """subject 是 user 自指可豁免,只要 object 落地即可。"""
+    assert is_grounded(_rel("user", "住在", "上海"), "我上周搬到上海了") is True
+
+
+def test_non_user_subject_must_appear():
+    """非 user 的 subject 必须在原文出现,否则疑似张冠李戴。"""
+    assert is_grounded(_rel("李四", "喜欢", "Python", subj_type="PERSON"), "我喜欢 Python") is False

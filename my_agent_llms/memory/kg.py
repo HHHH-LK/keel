@@ -94,6 +94,24 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 # ── SQLite 存储 ────────────────────────────────────────────
 
+# user 自指:subject 是这些时,grounding 不要求字面出现在原文
+_USER_SELF = {"user", "我", "我的", "自己", "本人", "咱"}
+
+
+def is_grounded(rel_data: dict, source_text: str) -> bool:
+    """triple 是否被原文支撑:subject 与 object 的名字都要落地。
+
+    防幻觉/张冠李戴:LLM 凭空抽出原文没有的实体 → 不 grounded → 进 pending。
+    user 自指的 subject("我"/"user")豁免字面匹配。
+    """
+    text = source_text or ""
+    subj = (rel_data.get("subject_name") or "").strip()
+    obj = (rel_data.get("object_name") or "").strip()
+    subj_ok = subj in _USER_SELF or (bool(subj) and subj in text)
+    obj_ok = obj in _USER_SELF or (bool(obj) and obj in text)
+    return subj_ok and obj_ok
+
+
 def normalize_name(name: str) -> str:
     """实体名归一化:首尾去空白 + 小写 + 内部空白折叠。
 
