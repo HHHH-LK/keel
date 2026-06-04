@@ -13,8 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 def count_tokens(text: str) -> int:
     """估算文本 token 数。优先 tiktoken,未安装时回退 len//3 启发式。
 
-    回退值对中英混合是保守估计;不影响"永不超预算"铁律,
-    因为预算判定与兜底都用同一个 counter。
+    回退值对中英混合是保守估计;ContextEngine.build 通过计数感知的预留(HEADING_RESERVE + group 段数)保证渲染后真实 token 不超预算。
     """
     if not text:
         return 0
@@ -229,7 +228,12 @@ class ContextEngine:
 
     def build(self, segments: List[ContextSegment], budget: int) -> BuildResult:
         segs = self._dedup(segments)
-        # 预算先扣小标题/role 开销;但 report 对外暴露的是用户设定的完整预算
-        chosen, report = self._select(segs, max(0, budget - HEADING_RESERVE))
+        # 预算扣减:固定小标题开销 + 与 group 段数量成正比的并接损耗
+        # (逐段 token 估算会低估并接后的真实 token,每个 group 段最多差 ~1 token;
+        #  计数感知的预留把"永不超预算"从概率性变成确定性。)
+        group_count = sum(1 for s in segs if s.source in GROUP_SOURCES)
+        reserve = HEADING_RESERVE + group_count
+        chosen, report = self._select(segs, max(0, budget - reserve))
+        result = BuildResult(messages=self._render(chosen), report=report)
         report.budget = budget
-        return BuildResult(messages=self._render(chosen), report=report)
+        return result

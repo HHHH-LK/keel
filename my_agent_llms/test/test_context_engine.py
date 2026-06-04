@@ -230,3 +230,27 @@ def test_assemble_context_reports_available():
     m.assemble_context("sys", query="内容")
     assert m._last_budget_report is not None
     assert m._last_budget_report.budget == 2000
+
+
+def test_build_rendered_never_exceeds_budget_many_group_segments():
+    eng = ContextEngine(dedup=False)
+    # 大量 group 段(kg),每段小;验证渲染后真实 token 和 <= budget
+    segs = [_seg("kg", f"事实编号{i}内容", tokens=None, order=3, seq=i, priority=0.9)
+            for i in range(300)]
+    result = eng.build(segs, budget=1056)
+    rendered = sum(count_tokens(m["content"]) for m in result.messages)
+    assert rendered <= 1056
+
+
+import pytest
+from pydantic import ValidationError
+
+
+def test_memory_config_rejects_tiny_budget():
+    with pytest.raises(ValidationError):
+        MemoryConfig(context_budget_tokens=100)
+
+
+def test_memory_config_accepts_normal_budget():
+    cfg = MemoryConfig(context_budget_tokens=12000)
+    assert cfg.context_budget_tokens == 12000

@@ -2,7 +2,7 @@
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 ColdBackendType = Literal["none", "jsonl", "sqlite"]
@@ -31,6 +31,15 @@ class MemoryConfig(BaseModel):
     context_budget_tokens: int = 12000   # 整组 messages 全局预算(> l1_max_tokens)
     context_dedup: bool = True           # 跨层去重开关
     context_relevance: RelevanceAlgo = "embedding"  # L0/KG 相关度算法
+
+    @field_validator("context_budget_tokens")
+    @classmethod
+    def _budget_must_exceed_reserve(cls, v: int) -> int:
+        if v < 1024:
+            raise ValueError(
+                "context_budget_tokens 必须 >= 1024(需大于 HEADING_RESERVE 并为保底段留足空间)"
+            )
+        return v
 
     # ── L2 分层托管(摘要纠错) ─────────────────────────────
     l2_reflect_every_n_turns: int = 5  # 每 N 轮定期反思校正摘要(0 = 关)
