@@ -16,4 +16,5 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
     "serpapi>=1.0.2",
+    "tiktoken>=0.13.0",
 ]

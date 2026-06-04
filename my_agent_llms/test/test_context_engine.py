@@ -55,7 +55,7 @@ def _seg(source, content, *, priority=0.5, tokens=None, floor=False,
          order=6, seq=0, item_id=None, role="system"):
     return ContextSegment(
         source=source, role=role, content=content, priority=priority,
-        tokens=tokens if tokens is not None else max(1, len(content) // 3),
+        tokens=tokens if tokens is not None else count_tokens(content),
         floor=floor, order=order, seq=seq, item_id=item_id,
     )
 
@@ -234,10 +234,10 @@ def test_assemble_context_reports_available():
 
 def test_build_rendered_never_exceeds_budget_many_group_segments():
     eng = ContextEngine(dedup=False)
-    # 大量 group 段:逐段 token 估算会低估并接后的真实 token。
-    # 段数足够多时,固定 256 预留不足以覆盖并接损耗 → 必须用计数感知预留。
-    # RED proof: budget=2000, 800 kg 段, old fixed reserve=256 → rendered=2015 > 2000 (FAIL)
-    # GREEN proof: count-aware reserve=256+800=1056 → rendered=1128 <= 2000 (PASS)
+    # 大量 group 段:逐段 token 之和会低估并接(heading + 换行)后的真实 token。
+    # 段数足够多时,固定 256 预留不足以覆盖并接损耗 → 必须用计数感知预留
+    # (HEADING_RESERVE + group 段数)。段 token 与渲染断言使用同一 count_tokens,
+    # 与生产 _gather_segments 的计数方式一致(tiktoken 或 len//3 回退均成立)。
     segs = [_seg("kg", f"事实编号{i}内容", tokens=None, order=3, seq=i, priority=0.9)
             for i in range(800)]
     result = eng.build(segs, budget=2000)
