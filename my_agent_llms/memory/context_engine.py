@@ -87,3 +87,72 @@ def make_embedding_relevance(provider) -> Callable[[str, str], float]:
         except Exception:
             return bigram_relevance(text, query)
     return fn
+
+
+# ── 渲染常量 ────────────────────────────────────────────────
+ORDER = {
+    "system": 0, "l0-core": 1, "l2": 2, "kg": 3,
+    "l0-bg": 4, "recall": 5, "l1": 6,
+}
+HEADING_RESERVE = 256  # 给小标题 + role 开销预留的 token
+
+_SUBSTR_MIN_LEN = 4    # 子串包含去重的最短长度阈值(避免误杀过短片段)
+
+
+class ContextEngine:
+    def __init__(self, *, token_counter: Callable[[str], int] = count_tokens,
+                 relevance_fn: Optional[Callable[[str, str], float]] = None,
+                 dedup: bool = True) -> None:
+        self.count_tokens = token_counter
+        self.relevance_fn = relevance_fn or bigram_relevance
+        self.dedup = dedup
+
+    @staticmethod
+    def _normalize(content: str) -> str:
+        """归一化用于去重比较:去小标题行、合并空白、小写。"""
+        lines = [ln for ln in content.splitlines() if not ln.lstrip().startswith("#")]
+        return " ".join(" ".join(lines).split()).lower()
+
+    def _dedup(self, segments: List[ContextSegment]) -> List[ContextSegment]:
+        if not self.dedup:
+            return list(segments)
+        # 权威性:order 小者优先,其次 seq 小者
+        ordered = sorted(segments, key=lambda s: (s.order, s.seq))
+        kept: List[ContextSegment] = []
+        kept_keys: List[Tuple[str, ContextSegment]] = []
+        seen_item_ids: Dict[str, ContextSegment] = {}
+        for s in ordered:
+            key = self._normalize(s.content)
+            # item_id 去重
+            if s.item_id and s.item_id in seen_item_ids:
+                prev = seen_item_ids[s.item_id]
+                # L1 原文优先:若新段是 l1 而已留的不是 → 用 l1 替换
+                if s.source == "l1" and prev.source != "l1":
+                    kept = [k for k in kept if k is not prev]
+                    kept_keys = [(k, seg) for k, seg in kept_keys if seg is not prev]
+                    kept.append(s)
+                    kept_keys.append((key, s))
+                    seen_item_ids[s.item_id] = s
+                continue
+            # 完全相同
+            if any(key == k for k, _ in kept_keys):
+                continue
+            # 子串包含:被已留的更长段包含 → 跳过
+            if len(key) >= _SUBSTR_MIN_LEN and any(
+                key in k and len(k) > len(key) for k, _ in kept_keys
+            ):
+                continue
+            # 子串包含:新段更长,包含已留的较短段 → 移除已留的较短段
+            if len(key) >= _SUBSTR_MIN_LEN:
+                superseded = [
+                    seg for k, seg in kept_keys
+                    if k in key and len(key) > len(k)
+                ]
+                for sup in superseded:
+                    kept = [k for k in kept if k is not sup]
+                    kept_keys = [(k, seg) for k, seg in kept_keys if seg is not sup]
+            kept.append(s)
+            kept_keys.append((key, s))
+            if s.item_id:
+                seen_item_ids[s.item_id] = s
+        return kept
