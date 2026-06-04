@@ -91,7 +91,7 @@ DEFAULT_CONFIG: Dict = {
         "use_embedding":     False,      # 默认关,避免没 embedding API 时报错
     },
     # Doc Editor
-    "workspace": None,  # None → 自动建沙箱; 字符串 → 用该绝对/相对路径
+    "workspace": None,  # None → 用当前工作目录; 字符串 → 用该绝对/相对路径
 }
 
 
@@ -142,7 +142,7 @@ def _smart_elide(s: str, max_len: int) -> str:
       1. 含 $HOME 前缀 → 替换为 ~ (常见的 /Users/foo/Desktop/x 直接缩成 ~/Desktop/x)
       2. 仍超长且看着像路径(含 / 且没空格/换行) → 保留 '…/<最后 2 段>'
       3. 其它(命令行、prose、含空格的内容) → 走普通末尾 … 截断,不动结构
-    设计意图:7 个连排的 ReadFile/AttachDir 也不会因路径噪音堆爆屏。
+    设计意图:多个连排的 ReadFile/Edit 也不会因路径噪音堆爆屏。
     """
     if " " in s or "\n" in s or "/" not in s:
         if len(s) > max_len:
@@ -226,7 +226,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
         conflict_strength=mem_cfg_data["conflict_strength"],
     )
 
-    # ── Doc Editor: 沙箱 + 6 个文件工具 ────────────────────
+    # ── Doc Editor: 就地工作区 + 4 个文件工具 ────────────────────
     from my_agent_llms.workspace import Workspace
     from my_agent_llms.tools.builtin.read_file import ReadFile
     from my_agent_llms.tools.builtin.edit_file import EditFile
