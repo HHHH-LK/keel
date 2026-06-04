@@ -80,14 +80,14 @@ def _read_decision_key() -> "PermissionDecision":
 
 
 def prompt_permission(name: str, args: Dict[str, Any], preview: str) -> "PermissionDecision":
-    """阻塞地弹一个审批框,返回 True=允许 / False=拒绝。
+    """阻塞地弹一个审批框,返回 PermissionDecision(ALLOW_ONCE/ALLOW_ALWAYS/DENY)。
 
     调用方必须保证调用前已把任何 rich Live 区域 close,
     以免 Panel 跟 Live 区域重叠。
 
     Raises:
         TerminalNotInteractiveError: 当 stdin/stdout 不是 TTY 时。
-            调用方应捕获并按安全默认处理(返回 False = 拒绝)。
+            调用方应捕获并按安全默认处理(降级为 DENY = 拒绝)。
     """
     if not _is_tty():
         raise TerminalNotInteractiveError("stdin/stdout 不是交互终端")
