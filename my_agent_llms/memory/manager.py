@@ -465,11 +465,17 @@ class MemoryManager:
 
     # ── 读取路径 ────────────────────────────────────────────
     def _gather_segments(
-        self, system_prompt, effective_query, passive_recall_k
+        self,
+        system_prompt: Optional[str],
+        effective_query: Optional[str],
+        passive_recall_k: int,
     ) -> List[ContextSegment]:
         """从各记忆层收集候选片段(不做选择/裁剪,那是引擎的活)。
 
         保留各层原有副作用:L0 卡 refresh、L3 record_hit 等。
+        注意:本方法不持 self._lock(与重构前的 _compose_l0_segments 一致);
+        playbook.update 的并发安全依赖 PlaybookStore 内部行为。recall 缓冲的
+        写入已在 _run_passive_recall_side_effects 内部加锁。
         """
         segs: List[ContextSegment] = []
         seq = 0
@@ -583,66 +589,6 @@ class MemoryManager:
         self._last_budget_report = result.report
         return result.messages
 
-    def _compose_l0_segments(
-        self, query: Optional[str]
-    ) -> Tuple[str, str]:
-        """生成 L0 注入的核心段和背景段文本。
-
-        query-aware 加权规则:
-        - hard_constraint 永远进核心段(无视相关性)
-        - effective_confidence = static_confidence + 0.3 * relevance
-        - effective ≥ 0.5 → 核心段
-        - 0.2 ≤ effective < 0.5 → 背景段
-        - effective < 0.2 且非硬约束 → 省略
-
-        无 query 时退化为:hard 进核心,其他进背景(按 confidence)。
-        """
-        active_cards = self.playbook.all_active()
-        if not active_cards:
-            return "", ""
-
-        # 算相关性
-        relevance_map: Dict[str, float] = {}
-        if query and active_cards:
-            try:
-                hits = self.semantic.search(query, k=len(active_cards) * 2)
-                # 这里 semantic.search 命中的是 MemoryItem 不是 PlaybookCard
-                # 我们不直接用相似度,而是简单的"content 子串匹配"作 query-aware 近似
-                # (避免给 L0 卡片独立 embedding 的复杂度,这是 v2 优化)
-            except Exception:
-                pass
-            for card in active_cards:
-                relevance_map[card.id] = self._cheap_relevance(card.content, query)
-        else:
-            for card in active_cards:
-                relevance_map[card.id] = 0.0
-
-        core_lines: List[str] = []
-        bg_lines: List[str] = []
-        for card in active_cards:
-            relevance = relevance_map.get(card.id, 0.0)
-            effective = card.confidence + 0.3 * relevance
-
-            # hard_constraint 永远进核心
-            if card.is_hard_constraint():
-                core_lines.append(self._format_l0_line(card))
-                card.refresh()
-                self.playbook.update(card)
-                continue
-
-            if effective >= 0.5:
-                core_lines.append(self._format_l0_line(card))
-                card.refresh()
-                self.playbook.update(card)
-            elif effective >= 0.2:
-                bg_lines.append(self._format_l0_line(card))
-                # 背景段也算被引用,但 refresh 幅度小
-                card.refresh(boost=0.005)
-                self.playbook.update(card)
-            # else: 省略,不注入
-
-        return "\n".join(core_lines), "\n".join(bg_lines)
-
     @staticmethod
     def _format_l0_line(card: PlaybookCard) -> str:
         """格式化一行 L0 内容,带 type tag 让 LLM 知道权威性。"""
@@ -654,48 +600,6 @@ class MemoryManager:
         }.get(card.type, "")
         prefix = f"- [{type_tag}] " if type_tag else "- "
         return f"{prefix}{card.content}"
-
-    @staticmethod
-    def _cheap_relevance(card_content: str, query: str) -> float:
-        """轻量相关性: 字符 bigram Jaccard。
-
-        避免给 L0 卡片单独算 embedding 的复杂度。准确度 < 向量但足够 query-aware。
-        """
-        def bigrams(s: str) -> set:
-            s = s.strip()
-            if len(s) < 2:
-                return {s} if s else set()
-            return {s[i:i + 2] for i in range(len(s) - 1)}
-
-        a = bigrams(card_content)
-        b = bigrams(query)
-        if not a or not b:
-            return 0.0
-        inter = len(a & b)
-        union = len(a | b)
-        return inter / union if union else 0.0
-
-    def _compose_passive_recall(self, query: str, k: int) -> str:
-        """被动 recall:系统主动调 L5,命中登记进 L3 缓冲,再从 L3 注入。
-
-        与旧版区别:命中不再"用完即弃",而是写入 L3 台账累计热度。
-        反复命中的项由 tick 的 _maybe_promote_from_l3 晋升进 L1。
-        """
-        # recall() 走向量检索(可能 I/O),放锁外;只有 L3 缓冲的读写需要加锁,
-        # 因为异步 tick 的 _maybe_promote_from_l3 会并发改同一个 buffer。
-        try:
-            hits = self.recall(query, k=k)
-        except Exception as exc:
-            print(f"⚠️ 被动 recall 失败,跳过: {exc}")
-            hits = []
-        with self._lock:
-            self.recall_buffer.evict_expired(self._turn_counter)
-            for item, score in hits:
-                # 高分且未 pinned → 立即 pin(用户 query 相关 = 这条该被保护)
-                if not item.pinned and score >= 0.6:
-                    item.pinned = True
-                self.recall_buffer.record_hit(item.id, score, self._turn_counter)
-            return self._compose_l3_injection()
 
     def _compose_l3_injection(self) -> str:
         """把当前 L3 台账渲染成注入文本(原文从 L5 取)。
