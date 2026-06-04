@@ -156,3 +156,38 @@ class ContextEngine:
             if s.item_id:
                 seen_item_ids[s.item_id] = s
         return kept
+
+    def _select(self, segments: List[ContextSegment], budget: int
+                ) -> Tuple[List[ContextSegment], BudgetReport]:
+        chosen = [s for s in segments if s.floor]
+        pool = [s for s in segments if not s.floor]
+        used = sum(s.tokens for s in chosen)
+        floor_tokens = used
+        dropped: List[Tuple[str, int]] = []
+
+        # 共享池:按 priority 降序,seq 升序(确定性)贪心填充
+        for s in sorted(pool, key=lambda x: (-x.priority, x.seq)):
+            if used + s.tokens <= budget:
+                chosen.append(s)
+                used += s.tokens
+            else:
+                dropped.append((s.source, s.tokens))
+
+        # 兜底:保底段本身超预算时,从最不权威端(order 大、seq 大)砍,
+        # 但永不砍 system(order 0)。
+        if used > budget:
+            chosen.sort(key=lambda s: (s.order, s.seq))
+            i = len(chosen) - 1
+            while used > budget and i >= 0:
+                s = chosen[i]
+                if s.order == 0:        # system 不砍
+                    i -= 1
+                    continue
+                used -= s.tokens
+                dropped.append((s.source, s.tokens))
+                chosen.pop(i)
+                i -= 1
+
+        report = BudgetReport(budget=budget, used=used,
+                              floor_tokens=floor_tokens, dropped=dropped)
+        return chosen, report

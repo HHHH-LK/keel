@@ -99,3 +99,47 @@ def test_dedup_disabled_keeps_all():
     eng = ContextEngine(dedup=False)
     segs = [_seg("l1", "同样的话", seq=0), _seg("l0-core", "同样的话", order=1, seq=1)]
     assert len(eng._dedup(segs)) == 2
+
+
+def test_select_never_exceeds_budget():
+    eng = ContextEngine(dedup=False)
+    segs = [_seg("l1", "x" * 300, tokens=100, order=6, seq=i) for i in range(20)]
+    chosen, report = eng._select(segs, budget=300)
+    assert report.used <= 300
+
+
+def test_select_floors_always_kept_even_low_priority():
+    eng = ContextEngine(dedup=False)
+    segs = [
+        _seg("system", "sys", tokens=50, floor=True, order=0, seq=0),
+        _seg("l0-core", "硬约束", tokens=50, floor=True, order=1, seq=1, priority=1.0),
+        _seg("recall", "高分但非保底", tokens=50, floor=False, order=5, seq=2, priority=0.9),
+        _seg("l2", "低分非保底", tokens=50, floor=False, order=2, seq=3, priority=0.1),
+    ]
+    chosen, report = eng._select(segs, budget=120)
+    srcs = {s.source for s in chosen}
+    assert "system" in srcs and "l0-core" in srcs   # 保底永在
+    assert "recall" not in srcs and "l2" not in srcs   # 剩余预算不足,非保底全丢
+
+
+def test_select_drops_lowest_priority_first():
+    eng = ContextEngine(dedup=False)
+    segs = [
+        _seg("kg", "高分", tokens=40, floor=False, order=3, seq=0, priority=0.9),
+        _seg("l2", "低分", tokens=40, floor=False, order=2, seq=1, priority=0.2),
+    ]
+    chosen, report = eng._select(segs, budget=40)  # 只装得下一个
+    assert any(s.source == "kg" for s in chosen)    # 高分留下
+    assert ("l2", 40) in report.dropped             # 低分被丢
+
+
+def test_select_hard_cap_when_floors_exceed_budget():
+    eng = ContextEngine(dedup=False)
+    segs = [
+        _seg("system", "sys", tokens=50, floor=True, order=0, seq=0),
+        _seg("l1", "最近1", tokens=50, floor=True, order=6, seq=1),
+        _seg("l1", "最近2", tokens=50, floor=True, order=6, seq=2),
+    ]
+    chosen, report = eng._select(segs, budget=80)
+    assert report.used <= 80
+    assert any(s.source == "system" for s in chosen)   # system 永不被砍
