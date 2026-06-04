@@ -13,6 +13,7 @@ TickMode = Literal["sync", "async", "off"]
 # accurate = LLMConflictDetector,LLM 精判矛盾,准确率高,每写一次 LLM 调用
 # extreme = KnowledgeGraphConflictDetector,实体+关系+时态,处理 7 种冲突类型
 ConflictStrength = Literal["off", "fast", "accurate", "extreme"]
+RelevanceAlgo = Literal["embedding", "bigram"]
 
 
 class MemoryConfig(BaseModel):
@@ -25,6 +26,11 @@ class MemoryConfig(BaseModel):
     l1_max_tokens: int = 8000      # 工作记忆 token 预算(放得下典型对话活跃工作集,减少抖动)
     l1_recent_turns: int = 10      # 最近 N 条硬保护,永不驱逐
     l2_max_tokens: int = 1000
+
+    # ── 上下文工程编排(全局窗口预算) ──────────────────────
+    context_budget_tokens: int = 12000   # 整组 messages 全局预算(> l1_max_tokens)
+    context_dedup: bool = True           # 跨层去重开关
+    context_relevance: RelevanceAlgo = "embedding"  # L0/KG 相关度算法
 
     # ── L2 分层托管(摘要纠错) ─────────────────────────────
     l2_reflect_every_n_turns: int = 5  # 每 N 轮定期反思校正摘要(0 = 关)

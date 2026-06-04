@@ -182,3 +182,13 @@ def test_build_report_records_drop():
     result = eng.build(segs, budget=40)
     assert result.report.used <= 40
     assert ("l2", 40) in result.report.dropped
+
+
+from my_agent_llms.memory.config import MemoryConfig
+
+
+def test_memory_config_context_defaults():
+    cfg = MemoryConfig()
+    assert cfg.context_budget_tokens == 12000
+    assert cfg.context_dedup is True
+    assert cfg.context_relevance == "embedding"
