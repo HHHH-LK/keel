@@ -229,6 +229,7 @@ class ContextEngine:
 
     def build(self, segments: List[ContextSegment], budget: int) -> BuildResult:
         segs = self._dedup(segments)
-        # 预算先扣小标题/role 开销
+        # 预算先扣小标题/role 开销;但 report 对外暴露的是用户设定的完整预算
         chosen, report = self._select(segs, max(0, budget - HEADING_RESERVE))
+        report.budget = budget
         return BuildResult(messages=self._render(chosen), report=report)

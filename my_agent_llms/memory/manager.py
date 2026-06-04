@@ -21,6 +21,10 @@ from my_agent_llms.memory.backends.sqlite import (
 from my_agent_llms.memory.base import MemoryTier
 from my_agent_llms.memory.cold import ColdStorage
 from my_agent_llms.memory.config import MemoryConfig
+from my_agent_llms.memory.context_engine import (
+    ContextEngine, ContextSegment, count_tokens,
+    bigram_relevance, make_embedding_relevance,
+)
 from my_agent_llms.memory.conflict import (
     ConflictDetector,
     LLMConflictDetector,
@@ -134,6 +138,18 @@ class MemoryManager:
                 max_workers=1,                          # 串行执行,不要并发 tick
                 thread_name_prefix="memory-tick",
             )
+
+        # ── 上下文工程引擎 ──
+        if self.config.context_relevance == "embedding" and self.embedding is not None:
+            relevance_fn = make_embedding_relevance(self.embedding)
+        else:
+            relevance_fn = bigram_relevance
+        self._context_engine = ContextEngine(
+            token_counter=count_tokens,
+            relevance_fn=relevance_fn,
+            dedup=self.config.context_dedup,
+        )
+        self._last_budget_report = None
 
     # ── 后端工厂（按 config 字符串选择） ────────────────────
     def _build_cold_backend(self) -> Optional[ColdBackend]:
@@ -448,6 +464,94 @@ class MemoryManager:
             self.summary.add(it)
 
     # ── 读取路径 ────────────────────────────────────────────
+    def _gather_segments(
+        self, system_prompt, effective_query, passive_recall_k
+    ) -> List[ContextSegment]:
+        """从各记忆层收集候选片段(不做选择/裁剪,那是引擎的活)。
+
+        保留各层原有副作用:L0 卡 refresh、L3 record_hit 等。
+        """
+        segs: List[ContextSegment] = []
+        seq = 0
+
+        def add(source, role, content, *, priority, floor, order, item_id=None):
+            nonlocal seq
+            segs.append(ContextSegment(
+                source=source, role=role, content=content, priority=priority,
+                tokens=self._context_engine.count_tokens(content),
+                floor=floor, order=order, seq=seq, item_id=item_id,
+            ))
+            seq += 1
+
+        # 1) system prompt(保底)
+        if system_prompt:
+            add("system", "system", system_prompt, priority=1.0, floor=True, order=0)
+
+        # 2) L0 卡片(逐卡成段;硬约束 floor=True,与核心卡同 source 渲染)
+        for card in self.playbook.all_active():
+            rel = self._context_engine.relevance_fn(card.content, effective_query) \
+                if effective_query else 0.0
+            effective = card.confidence + 0.3 * rel
+            line = self._format_l0_line(card)
+            if card.is_hard_constraint():
+                add("l0-core", "system", line, priority=1.0, floor=True,
+                    order=1, item_id=card.id)
+                card.refresh(); self.playbook.update(card)
+            elif effective >= 0.5:
+                add("l0-core", "system", line, priority=min(1.0, effective),
+                    floor=False, order=1, item_id=card.id)
+                card.refresh(); self.playbook.update(card)
+            elif effective >= 0.2:
+                add("l0-bg", "system", line, priority=min(1.0, effective * 0.5),
+                    floor=False, order=4, item_id=card.id)
+                card.refresh(boost=0.005); self.playbook.update(card)
+            # else 省略
+
+        # 3) L2 摘要
+        summary = self.summary.current_summary()
+        if summary is not None:
+            content = (
+                "## 对话梗概(背景叙事)\n"
+                "仅用于理解上下文脉络。关于用户的具体事实"
+                "(身份/偏好/约束/当前状态)以上文 L0 核心信息与 KG 事实为准;"
+                "本段与之冲突时一律以 L0/KG 为准。\n\n" + summary.content
+            )
+            add("l2", "system", content, priority=0.45, floor=False, order=2)
+
+        # 4) KG 事实(逐条成段,便于按条去重/计预算)
+        if effective_query:
+            for f in self.recall_facts(effective_query):
+                rel = self._context_engine.relevance_fn(f, effective_query)
+                add("kg", "system", f"- {f}", priority=max(0.3, rel),
+                    floor=False, order=3)
+
+        # 5) 被动 recall(先跑副作用,再逐条成段)
+        if effective_query and passive_recall_k > 0:
+            self._run_passive_recall_side_effects(effective_query, passive_recall_k)
+            l1_ids = {it.id for it in self.working.items()}
+            for entry in self.recall_buffer.entries():
+                if entry.item_id in l1_ids:
+                    continue
+                item = self.semantic.get(entry.item_id)
+                if item is None or not item.is_active:
+                    continue
+                preview = item.content[:120]
+                add("recall", "system", f"- [{item.role}] {preview}",
+                    priority=float(entry.hit_score), floor=False, order=5,
+                    item_id=entry.item_id)
+
+        # 6) L1 最近对话(最近 l1_recent_turns 轮保底)
+        active = [it for it in self.working.items() if it.is_active]
+        recent_cut = max(0, len(active) - self.config.l1_recent_turns)
+        for idx, it in enumerate(active):
+            md = it.to_message_dict()
+            is_recent = idx >= recent_cut
+            add("l1", md["role"], md["content"],
+                priority=0.5 if is_recent else 0.2,
+                floor=is_recent, order=6, item_id=it.id)
+
+        return segs
+
     def assemble_context(
         self,
         system_prompt: Optional[str] = None,
@@ -471,72 +575,13 @@ class MemoryManager:
                为 None 时跳过 L0 加权和被动 recall(纯 L0 全量 + 不召回)。
         kg_query: 向后兼容老参数,等同于 query。
         """
-        messages: List[Dict[str, str]] = []
         effective_query = query or kg_query
-
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-
-        # ── L0 注入(query-aware 加权,分核心段/背景段) ──
-        l0_core_text, l0_bg_text = self._compose_l0_segments(effective_query)
-        if l0_core_text:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "## 关于用户的核心信息(与当前问题相关 + 硬约束)\n"
-                    "回答时优先依据此段。\n\n" + l0_core_text
-                ),
-            })
-
-        # ── L2 全局摘要(背景叙事,最低权威) ──
-        summary = self.summary.current_summary()
-        if summary is not None:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "## 对话梗概(背景叙事)\n"
-                    "仅用于理解上下文脉络。关于用户的具体事实"
-                    "(身份/偏好/约束/当前状态)以上文 L0 核心信息与 KG 事实为准;"
-                    "本段与之冲突时一律以 L0/KG 为准。\n\n"
-                    + summary.content
-                ),
-            })
-
-        # ── KG facts (默认注入) ──
-        if effective_query:
-            facts = self.recall_facts(effective_query)
-            if facts:
-                fact_text = "\n".join(f"- {f}" for f in facts)
-                messages.append({
-                    "role": "system",
-                    "content": f"## 已知事实(来自知识图谱)\n{fact_text}",
-                })
-
-        # ── L0 背景信息 ──
-        if l0_bg_text:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "## 关于用户的背景信息(可能不直接相关)\n"
-                    "仅作背景理解,不要直接当作当前问题的依据。\n\n" + l0_bg_text
-                ),
-            })
-
-        # ── 被动 recall: 系统主动从 L5 召回相关原文 ──
-        if effective_query and passive_recall_k > 0:
-            recall_text = self._compose_passive_recall(effective_query, passive_recall_k)
-            if recall_text:
-                messages.append({
-                    "role": "system",
-                    "content": f"## 与当前问题相关的历史片段\n{recall_text}",
-                })
-
-        # ── L1 最近对话原文 ──
-        for it in self.working.items():
-            if not it.is_active:
-                continue  # 跳过已被取代的旧记忆
-            messages.append(it.to_message_dict())
-        return messages
+        segments = self._gather_segments(system_prompt, effective_query,
+                                         passive_recall_k)
+        result = self._context_engine.build(
+            segments, self.config.context_budget_tokens)
+        self._last_budget_report = result.report
+        return result.messages
 
     def _compose_l0_segments(
         self, query: Optional[str]
@@ -669,6 +714,23 @@ class MemoryManager:
             preview = item.content[:120]
             lines.append(f"- [{item.role}] {preview}")
         return "\n".join(lines)
+
+    def _run_passive_recall_side_effects(self, query: str, k: int) -> None:
+        """只做被动 recall 的副作用:L5 召回 → 自动 pin → 记 L3 台账。
+
+        渲染交给 _gather_segments(逐条成 recall 段)。
+        """
+        try:
+            hits = self.recall(query, k=k)
+        except Exception as exc:
+            print(f"⚠️ 被动 recall 失败,跳过: {exc}")
+            hits = []
+        with self._lock:
+            self.recall_buffer.evict_expired(self._turn_counter)
+            for item, score in hits:
+                if not item.pinned and score >= 0.6:
+                    item.pinned = True
+                self.recall_buffer.record_hit(item.id, score, self._turn_counter)
 
     # ── 检索 ────────────────────────────────────────────────
     def recall(

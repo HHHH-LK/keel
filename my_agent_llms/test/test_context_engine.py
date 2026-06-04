@@ -192,3 +192,41 @@ def test_memory_config_context_defaults():
     assert cfg.context_budget_tokens == 12000
     assert cfg.context_dedup is True
     assert cfg.context_relevance == "embedding"
+
+
+# ── Task 7: ContextEngine 接线进 MemoryManager 的集成测试 ──
+from my_agent_llms.memory.manager import MemoryManager
+
+
+def _mgr():
+    # 内存后端、关冲突检测、关 tick:纯组装路径
+    return MemoryManager(config=MemoryConfig(
+        cold_backend="none", vector_backend="memory",
+        conflict_strength="off", tick_mode="off",
+        context_budget_tokens=2000,
+    ))
+
+
+def test_assemble_context_never_exceeds_budget():
+    m = _mgr()
+    for i in range(40):
+        m.write(f"这是第{i}条较长的对话内容用来撑大上下文窗口" * 3, role="user")
+    msgs = m.assemble_context("你是助手", query="对话")
+    total = sum(count_tokens(x["content"]) for x in msgs)
+    assert total <= 2000
+
+
+def test_assemble_context_keeps_system_first():
+    m = _mgr()
+    m.write("你好", role="user")
+    msgs = m.assemble_context("你是助手", query="你好")
+    assert msgs[0]["role"] == "system"
+    assert "你是助手" in msgs[0]["content"]
+
+
+def test_assemble_context_reports_available():
+    m = _mgr()
+    m.write("一些内容", role="user")
+    m.assemble_context("sys", query="内容")
+    assert m._last_budget_report is not None
+    assert m._last_budget_report.budget == 2000
