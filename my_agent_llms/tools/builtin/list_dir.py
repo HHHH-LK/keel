@@ -1,4 +1,4 @@
-"""ListDir —— 列 sandbox 内文件,带大小、mtime,attached 文件附原路径。"""
+"""ListDir —— 列工作区文件,带大小、mtime。"""
 from __future__ import annotations
 
 import datetime as _dt
@@ -9,8 +9,6 @@ from typing import Any, Dict, List
 from my_agent_llms.tools.base import Tool, ToolParameter
 from my_agent_llms.workspace import Workspace, WorkspaceViolation
 
-MANIFEST_NAME = "MANIFEST.json"
-
 
 class ListDir(Tool):
     side_effect_free = True  # 纯读目录/stat,无写 → 可并行
@@ -18,7 +16,7 @@ class ListDir(Tool):
     def __init__(self, workspace: Workspace):
         super().__init__(
             name="LS",
-            description="列 sandbox 内文件,默认递归 2 层。attached 文件会显示来源路径。",
+            description="列工作区文件,默认递归 2 层。",
         )
         self.ws = workspace
 
@@ -33,26 +31,21 @@ class ListDir(Tool):
             return "❌ max_depth 必须为整数"
 
         try:
-            base = self.ws.resolve(path)
+            base = self.ws.resolve_read(path)
         except WorkspaceViolation as e:
             return f"❌ {e}"
 
         if not base.exists() or not base.is_dir():
             return f"❌ {path} 不是目录"
 
-        manifest = self.ws.manifest()
         lines: List[str] = []
         for p in self._walk(base, max_depth):
             rel = self.ws.relative(p)
-            if rel == MANIFEST_NAME:
-                continue
             if not fnmatch.fnmatch(p.name, pattern):
                 continue
             size = p.stat().st_size
             mtime = _dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-            origin = manifest.get(rel)
-            origin_str = f"  ← {origin}" if origin else ""
-            lines.append(f"{rel}\t{size}\t{mtime}{origin_str}")
+            lines.append(f"{rel}\t{size}\t{mtime}")
 
         if not lines:
             return "(空)"
@@ -69,7 +62,7 @@ class ListDir(Tool):
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
-            ToolParameter(name="path", type="string", description="起点(默认 sandbox 根)", required=False, default="."),
+            ToolParameter(name="path", type="string", description="起点(默认工作区根)", required=False, default="."),
             ToolParameter(name="pattern", type="string", description="glob 模式,如 *.md", required=False, default="*"),
             ToolParameter(name="max_depth", type="integer", description="最大递归深度", required=False, default=2),
         ]

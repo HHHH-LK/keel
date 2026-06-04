@@ -31,32 +31,3 @@ def test_list_filters_by_pattern(tmp_path):
     out = _run(ws, pattern="*.md")
     assert "a.md" in out
     assert "b.txt" not in out
-
-
-def test_list_shows_origin_for_attached(tmp_path):
-    sandbox = tmp_path / "sandbox"
-    outside = tmp_path / "outside"
-    sandbox.mkdir()
-    outside.mkdir()
-    ws = Workspace(sandbox)
-    src = outside / "origin.md"
-    src.write_text("from outside")
-    ws.attach(src)
-    out = _run(ws)
-    assert "origin.md" in out
-    assert "←" in out or "→" in out  # origin marker
-    assert "outside" in out  # 源路径片段
-
-
-def test_list_excludes_manifest(tmp_path):
-    """MANIFEST.json 是 sandbox 内部状态,不展示给 LLM。"""
-    sandbox = tmp_path / "sandbox"
-    outside = tmp_path / "outside"
-    sandbox.mkdir()
-    outside.mkdir()
-    ws = Workspace(sandbox)
-    src = outside / "x.md"
-    src.write_text("x")
-    ws.attach(src)  # 这会创建 MANIFEST.json
-    out = _run(ws)
-    assert "MANIFEST.json" not in out

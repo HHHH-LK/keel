@@ -232,9 +232,6 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     from my_agent_llms.tools.builtin.edit_file import EditFile
     from my_agent_llms.tools.builtin.write_file import WriteFile
     from my_agent_llms.tools.builtin.list_dir import ListDir
-    from my_agent_llms.tools.builtin.attach_file import AttachFile
-    from my_agent_llms.tools.builtin.attach_dir import AttachDir
-    from my_agent_llms.tools.builtin.export_file import ExportFile
 
     try:
         ws = Workspace(cfg.get("workspace"))
@@ -249,9 +246,6 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     registry.register_tool(EditFile(ws))
     registry.register_tool(WriteFile(ws))
     registry.register_tool(ListDir(ws))
-    registry.register_tool(AttachFile(ws))
-    registry.register_tool(AttachDir(ws))
-    registry.register_tool(ExportFile(ws))
 
     try:
         agent = MyFunctionCallAgent(
@@ -263,18 +257,14 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 "并在用户的偏好/事实变化时主动更新记忆。"
                 "用自然、温暖但不啰嗦的语气。\n\n"
                 "## 文件操作协议\n"
-                "你拥有 sandbox 文件工具。规则:\n"
-                "1. 用户提到外部路径:\n"
-                "   - 是文件 → AttachFile 拉进 sandbox\n"
-                "   - 是目录 → AttachDir 整个目录递归拉进 sandbox\n"
-                "     (自动跳过 .git/.venv/node_modules/__pycache__/二进制等,"
-                "      返回值会附带文件清单,无需再额外 LS)\n"
-                "2. sandbox 内用 Read / Edit / Write / LS 操作\n"
-                "3. 写类工具(Edit / Write / ExportFile)调用时框架会同步弹"
-                "审批框给用户。你不用再追问'要不要确认',直接调即可。"
-                "用户若拒绝,你会收到 \"用户拒绝了对 X 的调用\",请结合上下文"
-                "道歉/改方案/继续聊。\n"
-                "4. ExportFile 写回原位置;sandbox 内新建的文件 ExportFile 时必须给 dest_path\n"
+                "当前目录就是你的工作区,你直接对真实文件操作,无需拷贝:\n"
+                "1. 用 Read / LS 查看文件;Read/LS 可读工作区以外的路径"
+                "(如依赖库、系统配置),用于理解上下文。\n"
+                "2. 用 Edit / Write 修改文件 —— 只能写当前工作区(启动目录)子树内;"
+                "写工作区以外会被拒绝。\n"
+                "3. Edit / Write 调用时框架会同步弹审批框给用户(显示 diff)。"
+                "你不用追问'要不要确认',直接调即可。用户若拒绝,你会收到"
+                " \"用户拒绝了对 X 的调用\",请结合上下文道歉/改方案/继续聊。\n"
             ),
             memory_config=memory_config,
             max_steps=1000,
