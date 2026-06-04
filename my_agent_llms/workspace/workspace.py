@@ -11,7 +11,6 @@ from __future__ import annotations
 import datetime as _dt
 import fnmatch
 import json
-import secrets
 import shutil
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,12 +38,6 @@ class WorkspaceViolation(Exception):
     """路径越界 / 命中黑名单。Tool 内捕获后转字符串返回给 LLM。"""
 
 
-def _auto_sandbox_name() -> str:
-    """YYYYMMDD-HHMMSS-<6 位 hex>"""
-    ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"{ts}-{secrets.token_hex(3)}"
-
-
 class Workspace:
     def __init__(
         self,
@@ -54,10 +47,8 @@ class Workspace:
         deny_suffixes: Iterable[str] = DEFAULT_DENY_SUFFIXES,
     ):
         if root is None:
-            parent = Path.home() / ".my_agent_llms" / "workspaces"
-            parent.mkdir(parents=True, exist_ok=True)
-            root_path = parent / _auto_sandbox_name()
-            root_path.mkdir()
+            # 就地工作:默认以当前目录为工作区根(不再自动建空沙箱)
+            root_path = Path.cwd()
         else:
             root_path = Path(root).expanduser()
             if not root_path.exists():

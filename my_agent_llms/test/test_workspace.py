@@ -13,20 +13,11 @@ def test_explicit_root_must_exist(tmp_path):
         Workspace(tmp_path / "does_not_exist")
 
 
-def test_none_root_creates_auto_sandbox(monkeypatch, tmp_path):
-    # 把 HOME 指到 tmp_path,避免污染用户真实 home
-    monkeypatch.setenv("HOME", str(tmp_path))
+def test_none_root_uses_cwd(monkeypatch, tmp_path):
+    # 新语义: root=None 时工作区根 = 当前工作目录
+    monkeypatch.chdir(tmp_path)
     ws = Workspace(None)
-    assert ws.root.exists()
-    # 用 resolve() 抹平 macOS /var → /private/var 的 symlink 差异
-    expected_parent = (tmp_path / ".my_agent_llms" / "workspaces").resolve()
-    assert ws.root.parent == expected_parent
-    # 目录名: YYYYMMDD-HHMMSS-<6 位>
-    name = ws.root.name
-    assert len(name) == 22
-    assert name[8] == "-"
-    assert name[15] == "-"
-    assert all(c in "0123456789abcdef" for c in name[16:])
+    assert ws.root == tmp_path.resolve()
 
 
 def test_manifest_path_is_under_root(tmp_path):
