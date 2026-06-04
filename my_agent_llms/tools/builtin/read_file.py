@@ -28,7 +28,7 @@ class ReadFile(Tool):
             return "❌ 缺少 path 参数"
 
         try:
-            p = self.ws.resolve(path)
+            p = self.ws.resolve_read(path)
         except WorkspaceViolation as e:
             return f"❌ {e}"
 

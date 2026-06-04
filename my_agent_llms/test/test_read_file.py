@@ -64,11 +64,15 @@ def test_read_directory_rejected(tmp_path):
     assert "目录" in out
 
 
-def test_read_path_traversal_rejected(tmp_path):
+def test_read_path_traversal_no_longer_boundary_error(tmp_path):
+    """resolve_read 允许读 CWD 外;../../etc/passwd 不再返回越界,
+    但 /etc/passwd 在测试机上通常不存在,仍以 ❌ 文件不存在 结束。
+    (原行为:严格 resolve 返回 '越界';新行为:宽松 resolve_read 只查黑名单)"""
     ws = Workspace(tmp_path)
     out = _run(ws, path="../../etc/passwd")
-    assert out.startswith("❌")
-    assert "越界" in out
+    # 路径合法(未命中黑名单);若文件存在则成功读取,不存在则返回不存在错误
+    # 关键断言:不再是越界错误
+    assert "越界" not in out
 
 
 def test_read_non_utf8_rejected(tmp_path):
