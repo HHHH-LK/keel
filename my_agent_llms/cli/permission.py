@@ -5,6 +5,7 @@ agent 主循环在 execute_tool 前调它,阻塞等用户决定。
 """
 from __future__ import annotations
 
+import enum
 import sys
 from typing import Any, Dict
 
@@ -18,6 +19,12 @@ from rich.syntax import Syntax
 
 from my_agent_llms.cli import theme
 from my_agent_llms.cli.console import console
+
+
+class PermissionDecision(enum.Enum):
+    ALLOW_ONCE = "allow_once"
+    ALLOW_ALWAYS = "allow_always"
+    DENY = "deny"
 
 
 class TerminalNotInteractiveError(RuntimeError):
@@ -36,16 +43,22 @@ def _looks_like_diff(text: str) -> bool:
     return stripped.startswith(("---", "+++", "@@"))
 
 
-def _read_decision_key() -> bool:
-    """阻塞读一个键,返回 True=允许 / False=拒绝。抽离方便测试 monkeypatch。"""
-    decision: Dict[str, Any] = {"v": None}
+def _read_decision_key() -> "PermissionDecision":
+    """阻塞读一个键。y/Enter=允许一次, a=本会话总是允许, n/Esc/Ctrl-C=拒绝。"""
+    decision = {"v": PermissionDecision.DENY}
     kb = KeyBindings()
 
     @kb.add("y")
     @kb.add("Y")
     @kb.add("enter")
     def _yes(event):
-        decision["v"] = True
+        decision["v"] = PermissionDecision.ALLOW_ONCE
+        event.app.exit()
+
+    @kb.add("a")
+    @kb.add("A")
+    def _always(event):
+        decision["v"] = PermissionDecision.ALLOW_ALWAYS
         event.app.exit()
 
     @kb.add("n")
@@ -53,7 +66,7 @@ def _read_decision_key() -> bool:
     @kb.add("escape")
     @kb.add("c-c")
     def _no(event):
-        decision["v"] = False
+        decision["v"] = PermissionDecision.DENY
         event.app.exit()
 
     app = Application(
@@ -63,10 +76,10 @@ def _read_decision_key() -> bool:
         erase_when_done=True,
     )
     app.run()
-    return bool(decision["v"]) if decision["v"] is not None else False
+    return decision["v"]
 
 
-def prompt_permission(name: str, args: Dict[str, Any], preview: str) -> bool:
+def prompt_permission(name: str, args: Dict[str, Any], preview: str) -> "PermissionDecision":
     """阻塞地弹一个审批框,返回 True=允许 / False=拒绝。
 
     调用方必须保证调用前已把任何 rich Live 区域 close,
@@ -88,15 +101,17 @@ def prompt_permission(name: str, args: Dict[str, Any], preview: str) -> bool:
         Panel(body, title=f"审批工具调用  {name}", border_style=theme.AGENT)
     )
     console.print(
-        f"  [{theme.DIM}][y] 允许   [n] 拒绝   [Enter=y · Esc=n][/]"
+        f"  [{theme.DIM}][y] 允许   [a] 总是允许   [n] 拒绝   [Enter=y · Esc=n][/]"
     )
     decision = _read_decision_key()
     # 跟 Claude Code 一致:按完键就把 hint 那一行抹掉,换成决策反馈
     # ANSI:cursor up 1 行 → 清整行 → 回到列 0
     sys.stdout.write("\x1b[1A\x1b[2K\r")
     sys.stdout.flush()
-    if decision:
-        console.print(f"  [{theme.OK}]✓ 已同意[/]")
-    else:
+    if decision is PermissionDecision.DENY:
         console.print(f"  [{theme.ERR}]✗ 已拒绝[/]")
+    elif decision is PermissionDecision.ALLOW_ALWAYS:
+        console.print(f"  [{theme.OK}]✓ 已同意(本会话总是允许)[/]")
+    else:
+        console.print(f"  [{theme.OK}]✓ 已同意[/]")
     return decision

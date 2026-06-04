@@ -2,22 +2,23 @@
 import pytest
 
 from my_agent_llms.cli import permission as perm
+from my_agent_llms.cli.permission import PermissionDecision
 
 
-def test_prompt_permission_returns_true_when_user_presses_y(monkeypatch, capsys):
-    monkeypatch.setattr(perm, "_read_decision_key", lambda: True)
+def test_prompt_permission_returns_allow_once_when_user_presses_y(monkeypatch, capsys):
+    monkeypatch.setattr(perm, "_read_decision_key", lambda: PermissionDecision.ALLOW_ONCE)
     monkeypatch.setattr(perm, "_is_tty", lambda: True)
     result = perm.prompt_permission("EditFile",
                                     {"path": "a.md", "old": "x", "new": "y"},
                                     "--- a.md\n+++ a.md\n@@ -1 +1 @@\n-x\n+y\n")
-    assert result is True
+    assert result is PermissionDecision.ALLOW_ONCE
 
 
-def test_prompt_permission_returns_false_when_user_presses_n(monkeypatch):
-    monkeypatch.setattr(perm, "_read_decision_key", lambda: False)
+def test_prompt_permission_returns_deny_when_user_presses_n(monkeypatch):
+    monkeypatch.setattr(perm, "_read_decision_key", lambda: PermissionDecision.DENY)
     monkeypatch.setattr(perm, "_is_tty", lambda: True)
     result = perm.prompt_permission("WriteFile", {"path": "b.md"}, "(新建文件)")
-    assert result is False
+    assert result is PermissionDecision.DENY
 
 
 def test_prompt_permission_raises_on_non_tty(monkeypatch):
@@ -33,7 +34,7 @@ def test_panel_includes_tool_name_and_preview(monkeypatch, capsys):
 
     captured = StringIO()
     monkeypatch.setattr(perm, "console", Console(file=captured, force_terminal=False, width=100))
-    monkeypatch.setattr(perm, "_read_decision_key", lambda: True)
+    monkeypatch.setattr(perm, "_read_decision_key", lambda: PermissionDecision.ALLOW_ONCE)
     monkeypatch.setattr(perm, "_is_tty", lambda: True)
 
     perm.prompt_permission("EditFile",
@@ -56,7 +57,7 @@ def _capture_console(monkeypatch):
 
 def test_decision_echo_when_allowed(monkeypatch):
     buf = _capture_console(monkeypatch)
-    monkeypatch.setattr(perm, "_read_decision_key", lambda: True)
+    monkeypatch.setattr(perm, "_read_decision_key", lambda: PermissionDecision.ALLOW_ONCE)
     monkeypatch.setattr(perm, "_is_tty", lambda: True)
     perm.prompt_permission("EditFile", {"path": "x"}, "preview text")
     out = buf.getvalue()
@@ -66,7 +67,7 @@ def test_decision_echo_when_allowed(monkeypatch):
 
 def test_decision_echo_when_rejected(monkeypatch):
     buf = _capture_console(monkeypatch)
-    monkeypatch.setattr(perm, "_read_decision_key", lambda: False)
+    monkeypatch.setattr(perm, "_read_decision_key", lambda: PermissionDecision.DENY)
     monkeypatch.setattr(perm, "_is_tty", lambda: True)
     perm.prompt_permission("EditFile", {"path": "x"}, "preview text")
     out = buf.getvalue()
