@@ -143,3 +143,42 @@ def test_select_hard_cap_when_floors_exceed_budget():
     chosen, report = eng._select(segs, budget=80)
     assert report.used <= 80
     assert any(s.source == "system" for s in chosen)   # system 永不被砍
+
+
+def test_build_orders_by_authority():
+    eng = ContextEngine(dedup=False)
+    segs = [
+        _seg("l1", "最近对话", tokens=10, floor=True, order=6, seq=3, role="user"),
+        _seg("system", "你是助手", tokens=10, floor=True, order=0, seq=0, role="system"),
+        _seg("l0-core", "用户是工程师", tokens=10, floor=False, order=1, seq=1, priority=0.9),
+    ]
+    result = eng.build(segs, budget=1000)
+    roles_contents = [(m["role"], m["content"]) for m in result.messages]
+    # system 在最前,l1 在最后
+    assert roles_contents[0][0] == "system"
+    assert "你是助手" in roles_contents[0][1]
+    assert roles_contents[-1][1] == "最近对话"
+
+
+def test_build_groups_l0_core_under_one_heading():
+    eng = ContextEngine(dedup=False)
+    segs = [
+        _seg("l0-core", "- 用户是工程师", tokens=10, order=1, seq=0, priority=0.9),
+        _seg("l0-core", "- 用户喜欢猫", tokens=10, order=1, seq=1, priority=0.8),
+    ]
+    result = eng.build(segs, budget=1000)
+    core_msgs = [m for m in result.messages if "核心信息" in m["content"]]
+    assert len(core_msgs) == 1                        # 两张卡归并成一条 message
+    assert "用户是工程师" in core_msgs[0]["content"]
+    assert "用户喜欢猫" in core_msgs[0]["content"]
+
+
+def test_build_report_records_drop():
+    eng = ContextEngine(dedup=False)
+    segs = [
+        _seg("kg", "高分", tokens=40, order=3, seq=0, priority=0.9),
+        _seg("l2", "低分", tokens=40, order=2, seq=1, priority=0.2),
+    ]
+    result = eng.build(segs, budget=40)
+    assert result.report.used <= 40
+    assert ("l2", 40) in result.report.dropped

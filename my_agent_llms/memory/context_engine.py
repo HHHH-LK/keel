@@ -98,6 +98,18 @@ HEADING_RESERVE = 256  # 给小标题 + role 开销预留的 token
 
 _SUBSTR_MIN_LEN = 4    # 子串包含去重的最短长度阈值(避免误杀过短片段)
 
+# 分组类来源 → 小标题前缀(渲染时归并成一条 message)
+GROUP_HEADINGS = {
+    "l0-core": ("## 关于用户的核心信息(与当前问题相关 + 硬约束)\n"
+                "回答时优先依据此段。\n\n"),
+    "l0-bg":   ("## 关于用户的背景信息(可能不直接相关)\n"
+                "仅作背景理解,不要直接当作当前问题的依据。\n\n"),
+    "kg":      "## 已知事实(来自知识图谱)\n",
+    "recall":  "## 与当前问题相关的历史片段\n",
+}
+GROUP_ROLE = "system"           # 分组类一律 system role
+GROUP_SOURCES = set(GROUP_HEADINGS)
+
 
 class ContextEngine:
     def __init__(self, *, token_counter: Callable[[str], int] = count_tokens,
@@ -191,3 +203,32 @@ class ContextEngine:
         report = BudgetReport(budget=budget, used=used,
                               floor_tokens=floor_tokens, dropped=dropped)
         return chosen, report
+
+    def _render(self, chosen: List[ContextSegment]) -> List[Dict[str, str]]:
+        chosen = sorted(chosen, key=lambda s: (s.order, s.seq))
+        messages: List[Dict[str, str]] = []
+        i = 0
+        n = len(chosen)
+        while i < n:
+            s = chosen[i]
+            if s.source in GROUP_SOURCES:
+                # 归并相邻同 source 段成一条 message
+                lines = []
+                src = s.source
+                while i < n and chosen[i].source == src:
+                    lines.append(chosen[i].content)
+                    i += 1
+                messages.append({
+                    "role": GROUP_ROLE,
+                    "content": GROUP_HEADINGS[src] + "\n".join(lines),
+                })
+            else:
+                messages.append({"role": s.role, "content": s.content})
+                i += 1
+        return messages
+
+    def build(self, segments: List[ContextSegment], budget: int) -> BuildResult:
+        segs = self._dedup(segments)
+        # 预算先扣小标题/role 开销
+        chosen, report = self._select(segs, max(0, budget - HEADING_RESERVE))
+        return BuildResult(messages=self._render(chosen), report=report)
