@@ -35,6 +35,7 @@ from my_agent_llms.cli import banner, chat_view, help_view, status_bar, theme
 from my_agent_llms.cli.permission import prompt_permission, TerminalNotInteractiveError
 from my_agent_llms.cli.console import console
 from my_agent_llms.cli.prompt import build_session, prompt_html
+from my_agent_llms.cli.thinking import ThinkingSpinner
 
 from my_agent_llms.agents.function_call_agent import MyFunctionCallAgent
 from my_agent_llms.core.llm import MyLLM
@@ -834,28 +835,17 @@ class ChatCLI:
         # 用 slot 装 renderer 让 callback 可以重置它
         renderer_slot = {"current": chat_view.StreamingAgentRenderer(console)}
 
-        # spinner 用 slot 装,审批后 / 工具完成后可重启,让"按 y 立刻看到转圈"
-        def _make_status():
-            return console.status(
-                f"[{theme.AGENT}]伙伴[/] [{theme.DIM}]·  thinking…[/]",
-                spinner="dots",
-                spinner_style=theme.AGENT,
-            )
-        status_slot = {"current": _make_status(), "active": True}
-        status_slot["current"].start()
+        # scroll-safe spinner(只动当前行,不做 cursor-up):审批后 / 工具完成后
+        # 可随时停/起,让"按 y 立刻看到转圈"。它自己记 active 状态,所以
+        # start()/stop() 幂等,反复调用安全。
+        spinner = ThinkingSpinner(console)
+        spinner.start()
 
         def _stop_status() -> None:
-            if status_slot["active"]:
-                status_slot["active"] = False
-                status_slot["current"].stop()
+            spinner.stop()
 
         def _restart_status() -> None:
-            # 已经在转就不重复;之前停了就开一个新的
-            if status_slot["active"]:
-                return
-            status_slot["current"] = _make_status()
-            status_slot["current"].start()
-            status_slot["active"] = True
+            spinner.start()
 
         def _on_chunk(text: str) -> None:
             _stop_status()

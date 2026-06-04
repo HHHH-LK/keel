@@ -14,8 +14,7 @@ import re
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from rich.console import Console, Group
-from rich.live import Live
+from rich.console import Console
 from rich.markup import escape as _rich_escape
 from rich.text import Text
 
@@ -259,20 +258,23 @@ def render_agent_error(console: Console, message: str) -> None:
 
 
 class StreamingAgentRenderer:
-    """流式 agent 输出渲染器,支持"流式期纯文本 → close 时 swap 成 markdown"。
+    """无 Live 真·流式渲染器(Claude Code 风格)。
 
-    实现原理:
-    用 `rich.live.Live` 把整个 body 区域托管,流式期间每个 chunk 触发一次 update,
-    渲染的是"┃ bar + 原始文本"。close 时把 body 渲染换成"┃ bar + Markdown→ANSI",
-    然后 stop Live —— `transient=False` 让最后一次 update 留在 scrollback,
-    于是用户最终看到的是带格式的 markdown,但流式期间也实时看到了 plain text。
+    实现要点:
+    - text_chunk 直接 console.file.write(chunk) + flush,字符级推送到 stdout。
+      第一个 chunk 之前打 '⏺ ' 起头,换行后下一行非 '\\n' 字符前补 '  ' 缩进,
+      保证一段连续 text = 一个 ⏺ step,跟 Claude Code 一致。
+    - tool_notice **延迟** 到 tool_result / tool_diff_result 来时一起打。
+      好处:⏺ 的颜色一开始就是终态(绿/红/DIM),不再需要 ANSI 回去重涂,
+      也省掉了 Live + segments + _recolor_last_tool 一整套机器。
+      代价:工具执行期间 ⏺ 不可见(用户依赖外层 spinner 的转动作为反馈)。
+    - close() 只补 meta 行(elapsed/token/tools),不再有 swap、不再 stop Live。
+    - 流式期间放弃 inline markdown(**bold** / *italic* / `code`)的渲染:
+      跨 chunk 状态机过于脆弱,Claude Code 自己流式也是源码原样上屏。
 
-    内部用 segments 序列保留时序:
-      ("text", str)              累积纯文本
-      ("tool", name, preview)    工具调用提示
-
-    一段连续的 on_text_chunk 调用合并进同一 ("text", ...) segment。
-    tool_notice 插入会"切段",方便和文本交错时按时序渲染。
+    pop_last_tool_notice 保留是为了兼容 chat.py 的 permission 流程 ——
+    审批弹起之前,把还没打印的 pending notice 弹出,审批完后由调用方在新
+    renderer 上重新登记,等结果回来再统一染色。
     """
 
     def __init__(self, console: Console,
@@ -282,123 +284,99 @@ class StreamingAgentRenderer:
         self.role = role
         self.role_color = role_color
         self._opened = False
-        self._segments: list[tuple] = []
-        self._live: Optional[Live] = None
+        self._text_open = False          # 当前是否在一段未关闭的 text segment 里
+        self._pending_indent = False     # 刚写完 \n,下一个非 \n 字符前要补 '  '
+        # 等 result 来时一起打的 tool_notice: (name, preview, color_hint)
+        # color_hint=None → 让 result 推断 (✅绿/❌红/其它DIM);
+        # 显式传入 (e.g. theme.ERR for 拒绝) → 强制用这个色
+        self._pending_tool: Optional[tuple[str, str, Optional[str]]] = None
 
-    # ── 内部:渲染当前 segments ────────────────────────────
-    def _render_body(self, *, markdown: bool):
-        """把 segments 渲染成 Group。markdown=True 时文本走 Markdown→ANSI 通道。"""
-        if not self._segments:
-            return Text("")
-
-        renderables = []
-        for seg in self._segments:
-            kind = seg[0]
-            if kind == "text":
-                content = seg[1]
-                if not content:
-                    continue
-                # 普通回答 —— inline markdown 渲染 (**bold** / *italic* / `code`)
-                # 结构性 markdown (## 头 / 表格 / --- 等) 保留原文,跟 Claude Code 一致
-                inline = _render_inline_markdown(content)
-                renderables.append(_step_lines_from_text(inline, theme.DEFAULT))
-            elif kind == "tool":
-                # tool_notice (即将调用) 初始 DIM ⏺;拿到结果后会被回填成
-                # 绿 (成功) / 红 (失败),让 ⏺ 直观反映这一步是否成功
-                name = seg[1]
-                preview = seg[2] if len(seg) > 2 else ""
-                color = seg[3] if len(seg) > 3 else theme.DIM
-                body = name if not preview else f"{name}({preview})"
-                renderables.append(_step_lines(body, color, from_ansi=False))
-            elif kind == "tool_result":
-                # tool_result 是上一步 (tool_notice) 的续行 —— 用 ⎿ 连接,
-                # 不再起一个新 ⏺,避免一次工具调用看着像两个 step
-                text_line = seg[1]
-                color = _result_dot_color(text_line)
-                renderables.append(_continuation_lines(text_line, color))
-            elif kind == "tool_diff":
-                # tool_diff = '⎿  summary' + 缩进的行号化 diff (Claude Code Update 风格)
-                summary = seg[1]
-                diff_lines = seg[2]
-                truncated = seg[3] if len(seg) > 3 else 0
-                renderables.append(
-                    _render_tool_diff(summary, diff_lines, truncated)
-                )
-
-        if not renderables:
-            return Text("")
-        if len(renderables) == 1:
-            return renderables[0]
-        return Group(*renderables)
-
+    # ── 内部 helpers ─────────────────────────────────────────
     def _ensure_started(self) -> None:
+        """首次输出前打一个空行,跟前面 turn 隔开。"""
         if self._opened:
             return
         self._opened = True
-        # Claude Code 风格:不打 "伙伴 · 16:28" header,只留一空行作分隔
         self.console.print()
-        self._live = Live(
-            self._render_body(markdown=False),
-            console=self.console,
-            refresh_per_second=12,
-            transient=False,              # 保留最后一次 update (close 时的 markdown 版本)
-            vertical_overflow="visible",  # 默认 'ellipsis' 会在内容超出终端高度时
-                                          # 显示一个 '…' 直到 Live.stop() —— 看着像
-                                          # "流式卡住、close 时才一口气全吐"。改成
-                                          # 'visible' 后,长 reply 真·边来边滚屏
-        )
-        self._live.start()
+
+    def _close_text(self) -> None:
+        """text segment 切段:确保当前一行已结束,后续非 text 输出从行首开始。"""
+        if not self._text_open:
+            return
+        # _pending_indent=True 意味着我们刚写过 \n,行已经断了,不用再补
+        if not self._pending_indent:
+            self.console.file.write("\n")
+            self.console.file.flush()
+        self._text_open = False
+        self._pending_indent = False
+
+    def _flush_tool_notice(self, result_color: Optional[str] = None) -> None:
+        """把 pending 的 tool_notice 打到屏上。
+
+        颜色优先级:tool_notice(color=...) 显式给的 hint > result 推断色 > DEFAULT。
+        没有 pending 时 no-op,允许 tool_result 在无 tool_notice 的情况下调用。
+        """
+        if self._pending_tool is None:
+            return
+        name, preview, hint_color = self._pending_tool
+        color = hint_color or result_color or theme.DEFAULT
+        body = name if not preview else f"{name}({preview})"
+        self.console.print(_step_lines(body, color, from_ansi=False))
+        self._pending_tool = None
 
     # ── 公共回调 ──────────────────────────────────────────
     def text_chunk(self, chunk: str) -> None:
         if not chunk:
             return
         self._ensure_started()
-        # 跟上一段连续的 text 合并,避免 segments 膨胀
-        if self._segments and self._segments[-1][0] == "text":
-            old = self._segments[-1][1]
-            self._segments[-1] = ("text", old + chunk)
-        else:
-            self._segments.append(("text", chunk))
-        if self._live is not None:
-            self._live.update(self._render_body(markdown=False))
+        if not self._text_open:
+            # 新 text segment 起头:Rich 打彩色 '⏺ ',然后切到 raw write 模式
+            self.console.print("⏺ ", style=theme.DEFAULT, end="")
+            self._text_open = True
+            self._pending_indent = False
+
+        # 字符级推送:换行后补 2 空格缩进,保持 step 视觉。
+        # _pending_indent 跨 chunk 保持状态 —— 如果上个 chunk 以 \n 结尾,
+        # 这个 chunk 的第一个非 \n 字符前补 '  '。
+        buf: list[str] = []
+        for ch in chunk:
+            if ch == "\n":
+                buf.append("\n")
+                self._pending_indent = True
+            else:
+                if self._pending_indent:
+                    buf.append("  ")
+                    self._pending_indent = False
+                buf.append(ch)
+        self.console.file.write("".join(buf))
+        self.console.file.flush()
 
     def tool_notice(self, name: str, args_preview: str = "",
                     color: Optional[str] = None) -> None:
+        """登记一个即将调用的工具,延迟到 tool_result 来时一起打。
+
+        color 可选:None = 让结果推断;显式给 (e.g. theme.ERR for 拒绝) = 强制。
+        """
         self._ensure_started()
-        # 第 4 位是 ⏺ 颜色;默认 DIM,等 tool_result/tool_diff 回来后回填。
-        # 调用方也可显式传入颜色 (e.g. ERR for 拒绝,直接 final color)。
-        self._segments.append(("tool", name, args_preview, color or theme.DIM))
-        if self._live is not None:
-            self._live.update(self._render_body(markdown=False))
+        self._close_text()
+        self._pending_tool = (name, args_preview, color)
 
     def pop_last_tool_notice(self) -> Optional[tuple[str, str]]:
-        """弹出最近一个 tool_notice,返回 (name, preview) 让 caller 转移到别处。
+        """弹出 pending 的 tool_notice,返回 (name, preview)。
 
-        用途:permission gate 要把 renderer 关掉再起新的,旧 renderer 上的
-        ⏺ 一旦提交到 scrollback 就再也染不上色;调用方应在 close 前把
-        tool_notice "搬"到新 renderer,等 result 回来时统一染色。
+        用于 permission gate:审批前把还没打印的 pending notice 弹出,审批后
+        由调用方在新 renderer 上重新 tool_notice() 登记,等结果回来再统一染色。
         """
-        for i in range(len(self._segments) - 1, -1, -1):
-            if self._segments[i][0] == "tool":
-                seg = self._segments.pop(i)
-                if self._live is not None:
-                    self._live.update(self._render_body(markdown=False))
-                return seg[1], seg[2]
-        return None
-
-    def _recolor_last_tool(self, color: str) -> None:
-        """把最近一个 tool_notice 的 ⏺ 颜色回填成 color (绿=成功 / 红=失败)。"""
-        for i in range(len(self._segments) - 1, -1, -1):
-            if self._segments[i][0] == "tool":
-                seg = self._segments[i]
-                self._segments[i] = ("tool", seg[1], seg[2], color)
-                return
+        if self._pending_tool is None:
+            return None
+        name, preview, _color = self._pending_tool
+        self._pending_tool = None
+        return name, preview
 
     def tool_diff_result(self, summary_status: str, diff_text: str, *,
                          elapsed_sec: Optional[float] = None,
                          max_lines: int = 30) -> None:
-        """工具跑完且我们手上有 unified diff —— 跟 Claude Code 的 Update 一样。"""
+        """工具跑完且手上有 unified diff —— 跟 Claude Code 的 Update 一样。"""
         added, removed, lines = _parse_diff_for_display(diff_text)
         if not lines:
             self.tool_result(summary_status, elapsed_sec=elapsed_sec)
@@ -411,57 +389,49 @@ class StreamingAgentRenderer:
         if elapsed_sec is not None:
             summary = f"{summary}  ·  {_fmt_elapsed(elapsed_sec)}"
         self._ensure_started()
-        # diff 路径意味着写入成功,把上面 ⏺ 染绿
-        self._recolor_last_tool(theme.OK)
-        self._segments.append(("tool_diff", summary, lines, truncated))
-        if self._live is not None:
-            self._live.update(self._render_body(markdown=False))
+        self._close_text()
+        # diff 路径意味着写入成功 —— ⏺ 染绿,然后接 '⎿ summary + 行号化 diff'
+        self._flush_tool_notice(result_color=theme.OK)
+        self.console.print(_render_tool_diff(summary, lines, truncated))
 
     def tool_result(self, text: str, *,
                     elapsed_sec: Optional[float] = None,
                     max_lines: int = 1, max_line_chars: int = 300) -> None:
-        """工具刚跑完时立刻把结果落到屏上,不用等模型再 invoke 一次。
+        """工具跑完(普通文本结果):打 '⏺ tool(args)\\n  ⎿ result'。
 
-        默认只显示第一行(Claude Code 折叠风格)。模型还是拿到完整结果,
-        所以"细节"没丢,只是 UI 不堆。如需展开,可临时调高 max_lines。
+        默认只显示结果第一行(Claude Code 折叠风格)。模型还是拿到完整结果,
+        所以"细节"没丢,只是 UI 不堆。
         """
         if not text:
             return
         self._ensure_started()
+        self._close_text()
+        # 1. 处理结果文本:每行截宽 + 限行数 + elapsed 拼到首行末
         lines = text.rstrip("\n").splitlines() or [""]
-        # 每行兜底截
         clipped = [
             (ln if len(ln) <= max_line_chars else ln[:max_line_chars - 1] + "…")
             for ln in lines
         ]
-        # 行数兜底截:超出直接砍尾,不再加 '(N more lines)' 噪音行
         if len(clipped) > max_lines:
             clipped = clipped[:max_lines]
         body = "\n".join(clipped)
-        # elapsed 拼到结果第一行末尾 (`· 0.3s`)
         if elapsed_sec is not None:
             body_lines = body.split("\n")
             body_lines[0] = f"{body_lines[0]}  ·  {_fmt_elapsed(elapsed_sec)}"
             body = "\n".join(body_lines)
-        # 同步把上面 ⏺ 染色 (绿=成功 / 红=失败 或 拒绝)
-        self._recolor_last_tool(_result_dot_color(body))
-        self._segments.append(("tool_result", body))
-        if self._live is not None:
-            self._live.update(self._render_body(markdown=False))
+        # 2. 用结果推断的颜色打 pending tool_notice,再接 ⎿ result
+        color = _result_dot_color(body)
+        self._flush_tool_notice(result_color=color)
+        self.console.print(_continuation_lines(body, color))
 
     def close(self, tools_used: int = 0, elapsed_seconds: float = 0.0,
               tokens_in: int = 0, tokens_out: int = 0) -> None:
-        """收尾:把流式纯文本 swap 成 markdown 渲染版本,然后停 Live。
-        meta 行展示 total elapsed + token 总和 + tool 数。"""
+        """收尾:关掉未结束的 text 段、flush 残留 pending notice、补 meta 行。"""
         if not self._opened:
             return
-        if self._live is not None:
-            # Claude Code 风格:保留 plain text,不 swap 成 rich.Markdown
-            # (rich.Markdown 会把 --- 渲染成横线、### 加大加色、- 换成 •,
-            #  整体过于花哨;我们让 markdown 源直接展示,跟 Claude Code 一致)
-            self._live.update(self._render_body(markdown=False))
-            self._live.stop()
-            self._live = None
+        self._close_text()
+        # 极端兜底:tool_notice 后没等到 result 就 close(理论不会发生),用默认色 flush
+        self._flush_tool_notice()
 
         parts: list[str] = []
         if tools_used > 0:
