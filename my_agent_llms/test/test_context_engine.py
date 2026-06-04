@@ -234,12 +234,15 @@ def test_assemble_context_reports_available():
 
 def test_build_rendered_never_exceeds_budget_many_group_segments():
     eng = ContextEngine(dedup=False)
-    # 大量 group 段(kg),每段小;验证渲染后真实 token 和 <= budget
+    # 大量 group 段:逐段 token 估算会低估并接后的真实 token。
+    # 段数足够多时,固定 256 预留不足以覆盖并接损耗 → 必须用计数感知预留。
+    # RED proof: budget=2000, 800 kg 段, old fixed reserve=256 → rendered=2015 > 2000 (FAIL)
+    # GREEN proof: count-aware reserve=256+800=1056 → rendered=1128 <= 2000 (PASS)
     segs = [_seg("kg", f"事实编号{i}内容", tokens=None, order=3, seq=i, priority=0.9)
-            for i in range(300)]
-    result = eng.build(segs, budget=1056)
+            for i in range(800)]
+    result = eng.build(segs, budget=2000)
     rendered = sum(count_tokens(m["content"]) for m in result.messages)
-    assert rendered <= 1056
+    assert rendered <= 2000
 
 
 import pytest
