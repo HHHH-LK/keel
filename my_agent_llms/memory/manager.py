@@ -21,7 +21,7 @@ from my_agent_llms.memory.backends.sqlite import (
 from my_agent_llms.memory.base import MemoryTier
 from my_agent_llms.memory.cold import ColdStorage
 from my_agent_llms.memory.config import MemoryConfig
-from my_agent_llms.memory.context_engine import (
+from my_agent_llms.context.engine import (
     ContextEngine, ContextSegment, count_tokens,
     bigram_relevance, make_embedding_relevance,
 )

@@ -1,4 +1,4 @@
-from my_agent_llms.memory.context_engine import count_tokens
+from my_agent_llms.context.engine import count_tokens
 
 
 def test_count_tokens_positive_and_monotonic():
@@ -10,7 +10,7 @@ def test_count_tokens_positive_and_monotonic():
     assert long >= short
 
 
-from my_agent_llms.memory.context_engine import (
+from my_agent_llms.context.engine import (
     ContextSegment, bigram_relevance, make_embedding_relevance,
 )
 
@@ -48,7 +48,7 @@ def test_segment_defaults():
     assert seg.item_id is None
 
 
-from my_agent_llms.memory.context_engine import ContextEngine
+from my_agent_llms.context.engine import ContextEngine
 
 
 def _seg(source, content, *, priority=0.5, tokens=None, floor=False,
