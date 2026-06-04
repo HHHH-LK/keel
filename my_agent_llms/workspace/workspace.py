@@ -62,47 +62,48 @@ class Workspace:
         self._deny_suffixes: frozenset[str] = frozenset(deny_suffixes)
 
     # ── 路径守门 ────────────────────────────────────────────
-    def resolve(self, user_path: str) -> Path:
-        """把 user_path 解析到 sandbox 内绝对路径。
-        - 相对路径基于 self.root
-        - 绝对路径直接用,但必须落在 self.root 下
-        - 跟随符号链接,跟随后仍要在 self.root 下
-        - 命中 deny_dirs / deny_suffixes → raise
-        - 允许尚未存在的路径 (WriteFile 要建新文件)
-        """
+    def _to_abs(self, user_path: str) -> Path:
+        """把 user_path 解析成绝对路径(跟随符号链接,允许尚未存在的路径)。
+        不做任何越界/黑名单校验 —— 那由 resolve / resolve_read 各自决定。"""
         up = Path(user_path).expanduser()
         candidate = up if up.is_absolute() else (self.root / up)
-
-        # 必须先看是不是符号链接 —— is_symlink() 对悬空链接也有效,
-        # 否则悬空链接的 exists() 返回 False 会落到拼路径分支,LLM 一旦
-        # 写入,OS 仍会跟随链接到 sandbox 外,构成写入逃逸。
         if candidate.is_symlink():
-            p = candidate.resolve(strict=False)
-        elif candidate.exists():
-            p = candidate.resolve(strict=True)
-        else:
-            # 新建文件:父目录存在就解析父目录,再拼回文件名
-            parent = candidate.parent
-            if parent.exists():
-                p = parent.resolve(strict=True) / candidate.name
-            else:
-                # 父也不存在 —— resolve(strict=False) 尽力而为
-                p = candidate.resolve()
+            return candidate.resolve(strict=False)
+        if candidate.exists():
+            return candidate.resolve(strict=True)
+        parent = candidate.parent
+        if parent.exists():
+            return parent.resolve(strict=True) / candidate.name
+        return candidate.resolve()
 
-        try:
-            p.relative_to(self.root)
-        except ValueError:
-            raise WorkspaceViolation(f"路径越界: {p} 不在 workspace {self.root} 内")
-
+    def _check_blacklist(self, p: Path) -> None:
         for part in p.parts:
             if part in self._deny_dirs:
                 raise WorkspaceViolation(f"路径命中黑名单目录: {p}")
         if p.suffix in self._deny_suffixes:
             raise WorkspaceViolation(f"文件类型在黑名单: {p.suffix}")
+
+    def resolve(self, user_path: str) -> Path:
+        """严格(写用):解析到 sandbox 内,越界 raise,再查黑名单。"""
+        p = self._to_abs(user_path)
+        try:
+            p.relative_to(self.root)
+        except ValueError:
+            raise WorkspaceViolation(f"路径越界: {p} 不在 workspace {self.root} 内")
+        self._check_blacklist(p)
+        return p
+
+    def resolve_read(self, user_path: str) -> Path:
+        """宽松(读用):允许 CWD 以外,只查黑名单(防把密钥/敏感目录读进上下文)。"""
+        p = self._to_abs(user_path)
+        self._check_blacklist(p)
         return p
 
     def relative(self, p: Path) -> str:
-        return str(p.relative_to(self.root))
+        try:
+            return str(p.relative_to(self.root))
+        except ValueError:
+            return str(p)   # 读越界场景:p 在 root 外,展示绝对路径
 
     def check_external_path(self, p: Path) -> None:
         """对外部路径(不要求在 sandbox 内)做黑名单校验。
