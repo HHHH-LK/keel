@@ -33,6 +33,7 @@ from rich.prompt import Prompt
 
 from my_agent_llms.cli import banner, chat_view, help_view, status_bar, theme
 from my_agent_llms.cli.permission import prompt_permission, TerminalNotInteractiveError
+from my_agent_llms.cli.permission_grants import PermissionGrants, decide
 from my_agent_llms.cli.console import console
 from my_agent_llms.cli.prompt import build_session, prompt_html
 from my_agent_llms.cli.thinking import ThinkingSpinner
@@ -701,6 +702,7 @@ class ChatCLI:
     def __init__(self, cfg: Dict):
         self.cfg = cfg
         self.agent: Optional[MyFunctionCallAgent] = build_agent(cfg)
+        self.grants = PermissionGrants()
         self.multiline = False
         self.history_path = Path.home() / ".my_chat_history"
 
@@ -864,7 +866,7 @@ class ChatCLI:
             if cur.has_output:
                 cur.close()
             try:
-                ok = prompt_permission(name, args, preview)
+                ok = decide(self.grants, prompt_permission, name, args, preview)
             except TerminalNotInteractiveError:
                 console.print("[yellow]⚠ 非交互终端,自动拒绝[/yellow]")
                 ok = False
