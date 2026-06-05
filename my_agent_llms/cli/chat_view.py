@@ -20,22 +20,11 @@ from rich.markup import escape as _rich_escape
 from rich.text import Text
 
 from . import theme
-from .markdown_render import render_markdown
-
-
-# Claude Code 风格的极简 inline markdown 渲染:
-# 只处理 **bold** / *italic* / `code` 这三件套,把它们的字面装饰符号
-# (** / * / `) 抹掉换成 rich style;结构性 markdown (## 头 / - 列表 /
-# | 表格 / --- / ``` 代码块) 全部保留原文不动 —— 跟 Claude Code 一致,
-# 用户写啥屏上看到啥,不被 rich.Markdown 强加 ASCII 表 / 彩色横线。
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-_BOLD_RE        = re.compile(r"\*\*([^*\n]+?)\*\*")
-_ITALIC_RE      = re.compile(r"(?<![*\w])\*([^*\n]+?)\*(?!\w)")
+from .markdown_render import render_markdown, render_inline
 
 
 def _render_inline_markdown(text: str) -> Text:
-    """text → Rich Text,只渲 inline markdown (bold/italic/code)。其它原文保留。"""
-    from .markdown_render import render_inline
+    """text → Rich Text,只渲 inline markdown。委托 markdown_render.render_inline。"""
     return render_inline(text)
 
 
@@ -339,11 +328,20 @@ class StreamingAgentRenderer:
         if not self._text_open:
             return
         if self._live is not None:
-            self._live.update(self._framed_render(self._text_buf))
-            self._live.refresh()
-            self._live.stop()
-            self._live = None
-            self._text_buf = ""
+            # 兜底:update/refresh 万一抛(rich 内部),也必须 stop,否则后台刷新线程
+            # 泄漏 → 终端花屏。finally 保证 stop + 清状态。
+            try:
+                self._live.update(self._framed_render(self._text_buf))
+                self._live.refresh()
+            except Exception:
+                pass
+            finally:
+                try:
+                    self._live.stop()
+                except Exception:
+                    pass
+                self._live = None
+                self._text_buf = ""
         elif not self._pending_indent:
             self.console.file.write("\n")
             self.console.file.flush()
