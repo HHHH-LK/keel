@@ -32,12 +32,24 @@ _HR_LINE = "─" * 8
 
 def render_inline(text: str) -> Text:
     """只渲 inline(bold/italic/code/strike/link)。其它原文保留。残缺标记按字面。"""
-    safe = _rich_escape(text)
-    safe = _LINK_RE.sub(rf"[{theme.ACCENT}]\1[/][{theme.DIM}](\2)[/]", safe)
+    # 链接先抽成占位符再 escape:否则 rich.markup.escape 会把 [小写字母开头...]
+    # 转义成 \[...],导致链接(尤其英文小写文字)整行 markup 破掉。占位符不含
+    # [ 或 \,escape 不会动它,后续 inline sub 也不会误伤(占位符无 markdown 字符)。
+    links: list[str] = []
+
+    def _stash_link(m):
+        links.append(f"[{theme.ACCENT}]{_rich_escape(m.group(1))}[/]"
+                     f"[{theme.DIM}]({_rich_escape(m.group(2))})[/]")
+        return f"\x00L{len(links) - 1}\x00"
+
+    safe = _LINK_RE.sub(_stash_link, text)
+    safe = _rich_escape(safe)
     safe = _INLINE_CODE_RE.sub(r"[dim bold]\1[/]", safe)
     safe = _STRIKE_RE.sub(r"[strike]\1[/]", safe)
     safe = _BOLD_RE.sub(r"[bold]\1[/]", safe)
     safe = _ITALIC_RE.sub(r"[italic]\1[/]", safe)
+    for idx, markup in enumerate(links):       # 还原链接 markup
+        safe = safe.replace(f"\x00L{idx}\x00", markup)
     try:
         return Text.from_markup(safe)
     except Exception:

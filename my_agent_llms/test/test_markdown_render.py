@@ -23,6 +23,16 @@ def test_inline_code_and_italic_and_strike_and_link():
     assert "文档" in p
 
 
+def test_lowercase_english_link_not_broken():
+    # 回归:链接文字以小写英文开头不能让整行 markup 破掉/露出字面 tag
+    r = render_markdown("see [click here](http://x.com) now", 80)
+    p = r.plain
+    assert "click here" in p
+    assert "[" not in p and "]" not in p          # 不露 \[ 或 markup tag
+    assert "bright_magenta" not in p              # 不露字面 style 名
+    assert any("magenta" in str(s.style).lower() for s in r.spans)  # 链接文字着色
+
+
 def test_header_drops_hashes():
     p = _plain("## 标题二")
     assert p.strip().startswith("标题二") and "#" not in p
