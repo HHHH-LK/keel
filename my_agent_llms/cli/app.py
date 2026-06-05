@@ -271,6 +271,8 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     from my_agent_llms.tools.builtin.edit_file import EditFile
     from my_agent_llms.tools.builtin.write_file import WriteFile
     from my_agent_llms.tools.builtin.list_dir import ListDir
+    from my_agent_llms.tools.builtin.grep import GrepTool
+    from my_agent_llms.tools.builtin.glob import GlobTool
 
     try:
         ws = Workspace(cfg.get("workspace"))
@@ -285,6 +287,8 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     registry.register_tool(EditFile(ws))
     registry.register_tool(WriteFile(ws))
     registry.register_tool(ListDir(ws))
+    registry.register_tool(GrepTool(ws))
+    registry.register_tool(GlobTool(ws))
 
     try:
         agent = MyFunctionCallAgent(
@@ -302,6 +306,9 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 "当前目录就是你的工作区,需要动文件时直接对真实文件操作,无需拷贝:\n"
                 "1. 用 Read / LS 查看文件;Read/LS 可读工作区以外的路径"
                 "(如依赖库、系统配置),用于理解上下文。\n"
+                "1.5 探索代码先用 Glob 按模式找文件、Grep 搜内容定位(返回行号),"
+                "再用 Read 精读那几行(offset/limit),不要整文件全读;"
+                "不要读 .svg/图片等二进制原始内容;需要读多个文件时在一条消息里并行发多个 Read。\n"
                 "2. 用 Edit / Write 修改文件 —— 只能写当前工作区(启动目录)子树内;"
                 "写工作区以外会被拒绝。\n"
                 "3. Edit / Write 调用时框架会同步弹审批框给用户(显示 diff)。"
