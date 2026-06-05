@@ -1,4 +1,4 @@
-"""WriteFile —— 写整个文件到 sandbox 路径(覆盖或新建)。单步式,
+"""WriteFile —— 写整个文件到工作区路径(覆盖或新建)。单步式,
 审批由 Agent 主循环的 on_permission_request 回调统一处理。"""
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class WriteFile(Tool):
         super().__init__(
             name="Write",
             description=(
-                "写整个文件内容到 sandbox 路径(覆盖已有或新建)。传 path + content;"
+                "写整个文件内容到工作区路径(覆盖已有或新建)。传 path + content;"
                 "框架会在执行前同步弹审批框给用户。"
             ),
         )
@@ -85,6 +85,6 @@ class WriteFile(Tool):
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
-            ToolParameter(name="path", type="string", description="sandbox 内文件路径"),
+            ToolParameter(name="path", type="string", description="工作区内文件路径"),
             ToolParameter(name="content", type="string", description="完整新文件内容"),
         ]

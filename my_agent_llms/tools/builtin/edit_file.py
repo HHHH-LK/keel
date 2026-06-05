@@ -1,4 +1,4 @@
-"""EditFile —— 精确替换 sandbox 内文件的一段文字。单步式;由 Agent 层在
+"""EditFile —— 精确替换工作区内文件的一段文字。单步式;由 Agent 层在
 执行前同步弹审批框(见 Tool.requires_approval / preview_for_approval)。"""
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class EditFile(Tool):
         super().__init__(
             name="Edit",
             description=(
-                "精确替换 sandbox 内文件的某段文字。传 path + old_string + new_string;"
+                "精确替换工作区内文件的某段文字。传 path + old_string + new_string;"
                 "old_string 必须在文件中唯一匹配。框架会在执行前同步弹审批框给用户。"
             ),
         )
@@ -44,7 +44,7 @@ class EditFile(Tool):
             return (f"❌ {e}", None, None, None)
 
         if not p.exists():
-            return (f"❌ 文件不存在: {self.ws.relative(p)}。可用 ListDir 查看 sandbox 内文件",
+            return (f"❌ 文件不存在: {self.ws.relative(p)}。可用 ListDir 查看工作区内文件",
                     None, None, None)
         if p.is_dir():
             return (f"❌ {self.ws.relative(p)} 是目录", None, None, None)
@@ -97,7 +97,7 @@ class EditFile(Tool):
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
-            ToolParameter(name="path", type="string", description="sandbox 内文件路径"),
+            ToolParameter(name="path", type="string", description="工作区内文件路径"),
             ToolParameter(name="old_string", type="string",
                           description="要被替换的原文本(必须在文件中唯一)"),
             ToolParameter(name="new_string", type="string", description="替换后的文本"),

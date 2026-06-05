@@ -1,4 +1,4 @@
-"""ReadFile —— 读 sandbox 内文本文件,带行号,支持 offset/limit 分页。"""
+"""ReadFile —— 读文本文件,带行号,支持 offset/limit 分页。可读工作区以外路径。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -16,7 +16,7 @@ class ReadFile(Tool):
         super().__init__(
             name="Read",
             description=(
-                "读 sandbox 内文本文件,返回带行号的内容。"
+                "读文本文件,返回带行号的内容。可读工作区以外的路径(如依赖库、系统配置)。"
                 "默认一次读完(上限 2000 行);超长文件用 offset/limit 分页。"
             ),
         )
@@ -33,7 +33,7 @@ class ReadFile(Tool):
             return f"❌ {e}"
 
         if not p.exists():
-            return f"❌ 文件不存在: {self._safe_rel(p)}。可用 ListDir 查看 sandbox 内文件"
+            return f"❌ 文件不存在: {self._safe_rel(p)}。可用 ListDir 查看工作区内文件"
         if p.is_dir():
             return f"❌ {self._safe_rel(p)} 是目录,不是文件。用 ListDir 查看其内容"
 
@@ -78,7 +78,7 @@ class ReadFile(Tool):
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
-            ToolParameter(name="path", type="string", description="sandbox 内文件路径", required=True),
+            ToolParameter(name="path", type="string", description="文件路径(可工作区以外)", required=True),
             ToolParameter(name="offset", type="integer", description="从第几行开始(0-based)", required=False, default=0),
             ToolParameter(name="limit", type="integer", description="最多读多少行", required=False, default=DEFAULT_LIMIT),
         ]
