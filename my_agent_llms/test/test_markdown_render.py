@@ -66,3 +66,13 @@ def test_unterminated_bold_renders_literal():
 def test_never_raises_on_garbage():
     for s in ["", "*", "**", "`", "[", "###", "> ", "|"]:
         assert isinstance(render_markdown(s, 80), Text)
+
+
+def test_code_block_strips_fences_and_keeps_code():
+    p = _plain("```python\nprint(1)\n```", 80)
+    assert "print(1)" in p and "```" not in p
+
+
+def test_unclosed_code_fence_renders_in_progress():
+    p = _plain("```py\nx = 1\ny = 2", 80)
+    assert "x = 1" in p and "y = 2" in p and "```" not in p

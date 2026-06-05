@@ -9,10 +9,13 @@
 """
 from __future__ import annotations
 
+import io
 import re
 from typing import List
 
+from rich.console import Console
 from rich.markup import escape as _rich_escape
+from rich.syntax import Syntax
 from rich.text import Text
 
 from . import theme
@@ -28,6 +31,7 @@ _OLIST_RE       = re.compile(r"^(\s*)(\d+)\.\s+(.*)$")
 _HR_RE          = re.compile(r"^\s*([-*_])\1{2,}\s*$")
 
 _HR_LINE = "─" * 8
+_FENCE_RE = re.compile(r"^\s*```(\w+)?\s*$")
 
 
 def render_inline(text: str) -> Text:
@@ -54,6 +58,20 @@ def render_inline(text: str) -> Text:
         return Text.from_markup(safe)
     except Exception:
         return Text(text)
+
+
+def _render_code_block(code: str, lang: str, width: int) -> Text:
+    code = code.rstrip("\n")
+    try:
+        syntax = Syntax(code, lang or "text", theme="ansi_dark",
+                        background_color="default", word_wrap=False)
+        buf = io.StringIO()
+        tmp = Console(file=buf, force_terminal=True, color_system="truecolor",
+                      width=max(20, width))
+        tmp.print(syntax)
+        return Text.from_ansi(buf.getvalue().rstrip("\n"))
+    except Exception:
+        return Text(code)
 
 
 def _render_header(hashes: str, body: str) -> Text:
@@ -111,6 +129,18 @@ def _render(text: str, width: int) -> Text:
     n = len(lines)
     while i < n:
         line = lines[i]
+        # 代码块(``` 围栏;未闭合也当进行中代码块)
+        fm = _FENCE_RE.match(line)
+        if fm:
+            lang = fm.group(1) or "text"
+            body = []
+            i += 1
+            while i < n and not _FENCE_RE.match(lines[i]):
+                body.append(lines[i]); i += 1
+            if i < n:        # 跳过收尾围栏(未闭合时 i==n,不跳)
+                i += 1
+            blocks.append(_render_code_block("\n".join(body), lang, width))
+            continue
         if _HR_RE.match(line):
             blocks.append(_render_hr()); i += 1; continue
         m = _HEADER_RE.match(line)
