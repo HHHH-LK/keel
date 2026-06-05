@@ -117,6 +117,15 @@ class MemoryManager:
         # 先传 llm=None → 只跑确定性 pending GC;语义冲突等有可用 llm 再开。
         self._kg_reconciler = self._build_kg_reconciler()
 
+        # ── 用户层(双层记忆):仅当配置了 user_storage_dir 才建 ──
+        from my_agent_llms.memory.user_layer import UserLayer
+        if self.config.user_storage_dir is not None:
+            self.user_layer = UserLayer(
+                self.config.user_storage_dir, llm=llm, embedder=self.embedding,
+            )
+        else:
+            self.user_layer = None
+
         self.tiers: Dict[str, MemoryTier] = {
             self.working.name: self.working,
             self.summary.name: self.summary,
@@ -708,16 +717,32 @@ class MemoryManager:
         raise ValueError(f"未知格式: {format!r},支持 'mermaid' / 'dot'")
 
     def recall_facts(self, query: str, max_facts: int = 8) -> List[str]:
-        """从 KG 拿当前活跃事实(extreme 强度时才有用)。
-
-        返回自然语言的事实串,用于把"用户当前状态"喂给 LLM。
-        其他强度下返回空列表。
-        """
+        """从 KG 拿当前活跃事实(extreme 强度时有用)。双层:项目层 + 用户层,
+        项目优先 + 去重(项目盖用户)。"""
         from my_agent_llms.memory.kg import KnowledgeGraphConflictDetector
+        proj: List[str] = []
+        if isinstance(self.conflict_detector, KnowledgeGraphConflictDetector):
+            proj = self.conflict_detector.query_facts(query, max_facts=max_facts)
+        user: List[str] = []
+        if self.user_layer is not None:
+            user = self.user_layer.query_facts(query, max_facts=max_facts)
+        return self._merge_facts(proj, user, max_facts)
 
-        if not isinstance(self.conflict_detector, KnowledgeGraphConflictDetector):
-            return []
-        return self.conflict_detector.query_facts(query, max_facts=max_facts)
+    @staticmethod
+    def _merge_facts(project_facts: List[str], user_facts: List[str], max_facts: int) -> List[str]:
+        """项目优先 + 去重(按归一化串)。项目事实在前,用户事实补充未出现的。
+        实现 spec §3.5 的'项目盖用户':同一事实以项目层措辞为准。"""
+        seen = set()
+        out: List[str] = []
+        for f in [*project_facts, *user_facts]:
+            key = " ".join(f.lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(f)
+            if len(out) >= max_facts:
+                break
+        return out
 
     def history_chain(self, item_id: str) -> List[MemoryItem]:
         """追溯一条记忆被取代过的完整链条。
