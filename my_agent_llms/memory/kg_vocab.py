@@ -103,6 +103,7 @@ def normalize_scope(raw: str) -> str:
 _AUTHORITY: Dict[str, int] = {
     "user_explicit": 3,   # 用户显式声明 / /remember
     "user_stated": 2,     # 用户对话中陈述
+    "user_promoted": 2,   # 跨项目复现提升:反复印证,等同 user_stated
     "tool": 1,            # 工具/外部结果
     "inferred": 0,        # LLM 推断 / assistant 自述
 }
@@ -118,6 +119,7 @@ def authority_of(source_type: str) -> int:
 _BASE_CONFIDENCE: Dict[str, float] = {
     "user_explicit": 1.0,
     "user_stated": 0.9,
+    "user_promoted": 0.9,  # 跨项目复现提升:等同 user_stated
     "tool": 0.8,
     "inferred": 0.7,
 }
