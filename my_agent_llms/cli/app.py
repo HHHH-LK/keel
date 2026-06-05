@@ -195,6 +195,16 @@ def _preview_tool_args(args: Dict, *, max_total: int = 500, max_value: int = 80)
 # Agent 装配 (失败时返回 None)
 # ────────────────────────────────────────────────────────────
 
+def _resolve_storage_dirs(base: Path, cwd: Path):
+    """返回 (项目层 storage_dir, 用户层 storage_dir)。
+    项目根 = cwd 向上最近 .git 祖先,找不到用 cwd。"""
+    from my_agent_llms.memory.project_root import (
+        resolve_project_root, project_storage_dir, user_storage_dir,
+    )
+    root = resolve_project_root(cwd)
+    return project_storage_dir(base, root), user_storage_dir(base)
+
+
 def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     """根据 cfg 构建 agent。配置不全或构造失败 → 返回 None(不抛异常)。"""
     if not is_ready(cfg):
@@ -212,10 +222,13 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
         help_view.print_error(console, f"LLM 初始化失败: {exc}")
         return None
 
-    storage_dir = Path(os.getenv("MY_CHAT_STORAGE", str(DEFAULT_STORAGE_DIR)))
+    base_dir = Path(os.getenv("MY_CHAT_STORAGE", str(DEFAULT_STORAGE_DIR)))
+    storage_dir, user_dir = _resolve_storage_dirs(base_dir, Path.cwd())
+    console.print(f"[dim]项目记忆: {storage_dir}[/dim]")
     mem_cfg_data = cfg["memory"]
     memory_config = MemoryConfig(
         storage_dir=storage_dir,
+        user_storage_dir=user_dir,
         cold_backend=mem_cfg_data["cold_backend"],
         vector_backend=mem_cfg_data["vector_backend"],
         l1_max_tokens=4000,
