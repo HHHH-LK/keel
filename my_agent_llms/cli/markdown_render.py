@@ -29,6 +29,7 @@ _HEADER_RE      = re.compile(r"^(#{1,6})\s+(.*)$")
 _ULIST_RE       = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _OLIST_RE       = re.compile(r"^(\s*)(\d+)\.\s+(.*)$")
 _HR_RE          = re.compile(r"^\s*([-*_])\1{2,}\s*$")
+_TABLE_SEP_RE   = re.compile(r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$")
 
 _HR_LINE = "─" * 8
 _FENCE_RE = re.compile(r"^\s*```(\w+)?\s*$")
@@ -58,6 +59,36 @@ def render_inline(text: str) -> Text:
         return Text.from_markup(safe)
     except Exception:
         return Text(text)
+
+
+def _split_row(line: str) -> List[str]:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _render_table(rows: List[List[str]], width: int) -> Text:
+    ncol = max(len(r) for r in rows)
+    rows = [r + [""] * (ncol - len(r)) for r in rows]
+    colw = [max(len(rows[r][c]) for r in range(len(rows))) for c in range(ncol)]
+    out = Text()
+    for ri, row in enumerate(rows):
+        if ri:
+            out.append("\n")
+        for ci, cell in enumerate(row):
+            if ci:
+                out.append("  ")
+            seg = render_inline(cell.ljust(colw[ci]))
+            if ri == 0:
+                seg.stylize("bold")
+            out.append_text(seg)
+        if ri == 0:
+            out.append("\n")
+            out.append("─" * min(width, sum(colw) + 2 * (ncol - 1)), style=theme.DIM)
+    return out
 
 
 def _render_code_block(code: str, lang: str, width: int) -> Text:
@@ -140,6 +171,16 @@ def _render(text: str, width: int) -> Text:
             if i < n:        # 跳过收尾围栏(未闭合时 i==n,不跳)
                 i += 1
             blocks.append(_render_code_block("\n".join(body), lang, width))
+            continue
+        # 表格(连续以 | 开头的行;跳过 |---| 分隔行)
+        if "|" in line and line.strip().startswith("|"):
+            rows = []
+            while i < n and "|" in lines[i] and lines[i].strip().startswith("|"):
+                if not _TABLE_SEP_RE.match(lines[i]):
+                    rows.append(_split_row(lines[i]))
+                i += 1
+            if rows:
+                blocks.append(_render_table(rows, width))
             continue
         if _HR_RE.match(line):
             blocks.append(_render_hr()); i += 1; continue

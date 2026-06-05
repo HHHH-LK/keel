@@ -76,3 +76,19 @@ def test_code_block_strips_fences_and_keeps_code():
 def test_unclosed_code_fence_renders_in_progress():
     p = _plain("```py\nx = 1\ny = 2", 80)
     assert "x = 1" in p and "y = 2" in p and "```" not in p
+
+
+def test_table_aligned_header_bold_no_box():
+    md = "| 名 | 值 |\n|---|---|\n| a | 1 |\n| bb | 22 |"
+    r = render_markdown(md, 80)
+    p = r.plain
+    assert "名" in p and "值" in p and "a" in p and "bb" in p
+    assert "|" not in p and "---" not in p
+    assert any("bold" in str(s.style) for s in r.spans)
+    lines = [ln for ln in p.split("\n") if ln.strip()]
+    assert len(lines) >= 3
+
+
+def test_partial_table_renders_available_rows():
+    p = render_markdown("| 名 | 值 |", 80).plain
+    assert "名" in p and "值" in p and "|" not in p
