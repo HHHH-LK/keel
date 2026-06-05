@@ -88,7 +88,8 @@ class GrepTool(Tool):
         try:
             proc = subprocess.run(cmd, cwd=str(search_dir), capture_output=True,
                                   text=True, timeout=20)
-        except Exception:
+        except (subprocess.TimeoutExpired, OSError):
+            # rg 超时 / 消失 / OS 错误 → 退回 Python 兜底;其余异常上抛(可见,不静默)
             return self._run_python(
                 re.compile(pattern, re.IGNORECASE if ignore_case else 0),
                 base, glob, mode, ctx)
@@ -111,6 +112,8 @@ class GrepTool(Tool):
         match_files: List[str] = []
         for f in files:
             try:
+                if f.stat().st_size > 10_000_000:   # 跳过 >10MB 大文件,防撑内存
+                    continue
                 raw = f.read_bytes()
             except OSError:
                 continue
