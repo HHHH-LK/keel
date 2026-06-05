@@ -238,10 +238,12 @@ class MemoryManager:
         source: L0Source = L0Source.USER_EXPLICIT,
         source_ref: Optional[str] = None,
         confidence: float = 1.0,
+        scope: str = "project",
     ) -> PlaybookCard:
         """显式添加一张 L0 卡片(/remember 命令的底层)。
 
         type 不传则启发式分类。user_explicit 来源默认 confidence=1.0。
+        scope='user' 写用户层 playbook(无用户层时降级为项目层)。
         """
         card = PlaybookCard(
             content=content,
@@ -251,7 +253,10 @@ class MemoryManager:
             confidence=confidence,
             user_pinned=(source == L0Source.USER_EXPLICIT),
         )
-        self.playbook.add(card)
+        if scope == "user" and self.user_layer is not None:
+            self.user_layer.add_card(card)
+        else:
+            self.playbook.add(card)
         return card
 
     def forget(self, card_id: str) -> bool:

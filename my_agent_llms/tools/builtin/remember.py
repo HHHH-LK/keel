@@ -40,10 +40,15 @@ class RememberTool(Tool):
         if not content:
             return "(remember 失败：content 为空)"
 
+        scope = str(parameters.get("scope") or "project").strip().lower()
+        if scope not in ("user", "project"):
+            scope = "project"
+
         card = self.memory.remember(
             content,
             source=L0Source.LLM_REMEMBERED,
             confidence=LLM_REMEMBER_CONFIDENCE,
+            scope=scope,
         )
         return f"已记住（{card.type.value}）：{content}"
 
@@ -54,5 +59,12 @@ class RememberTool(Tool):
                 type="string",
                 description="要长期记住的一条关键信息(简洁陈述,一条一记)",
                 required=True,
+            ),
+            ToolParameter(
+                name="scope",
+                type="string",
+                description="作用域:'user'=关于你本人的跨项目偏好;'project'=本项目专属(缺省)。不确定填 project。",
+                required=False,
+                default="project",
             ),
         ]
