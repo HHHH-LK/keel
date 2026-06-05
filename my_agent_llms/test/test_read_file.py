@@ -77,7 +77,8 @@ def test_read_path_traversal_no_longer_boundary_error(tmp_path):
 
 def test_read_non_utf8_rejected(tmp_path):
     ws = Workspace(tmp_path)
+    # \xff\xfe\x00\x01 contains a null byte → caught by binary sniffer first
+    # (previously caught by UTF-8 decode; both paths correctly reject the file)
     (tmp_path / "bin.dat").write_bytes(b"\xff\xfe\x00\x01")
     out = _run(ws, path="bin.dat")
     assert out.startswith("❌")
-    assert "UTF-8" in out

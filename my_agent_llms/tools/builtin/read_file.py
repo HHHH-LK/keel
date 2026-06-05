@@ -8,6 +8,12 @@ from my_agent_llms.workspace import Workspace, WorkspaceViolation
 
 DEFAULT_LIMIT = 2000
 
+_BINARY_SUFFIXES = frozenset({
+    ".svg", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
+    ".pdf", ".mp4", ".mp3", ".wav", ".zip", ".tar", ".gz", ".tgz",
+    ".exe", ".bin", ".so", ".dylib", ".o", ".a", ".woff", ".woff2", ".ttf",
+})
+
 
 class ReadFile(Tool):
     side_effect_free = True  # 纯读文件,无写 → 可并行
@@ -36,6 +42,16 @@ class ReadFile(Tool):
             return f"❌ 文件不存在: {self._safe_rel(p)}。可用 ListDir 查看工作区内文件"
         if p.is_dir():
             return f"❌ {self._safe_rel(p)} 是目录,不是文件。用 ListDir 查看其内容"
+
+        if p.suffix.lower() in _BINARY_SUFFIXES:
+            return (f"❌ {self._safe_rel(p)} 是二进制/图片类文件,未读取原始内容"
+                    "(避免灌爆上下文)。如需了解内容请换其它方式。")
+        try:
+            if b"\x00" in p.read_bytes()[:4096]:
+                return (f"❌ {self._safe_rel(p)} 看起来是二进制文件,未读取原始内容"
+                        "(避免灌爆上下文)。")
+        except OSError as e:
+            return f"❌ 读取失败: {e}"
 
         try:
             text = p.read_text(encoding="utf-8")
