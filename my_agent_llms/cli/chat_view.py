@@ -114,9 +114,10 @@ def _result_dot_color(text: str) -> str:
     return theme.DIM
 
 
-def _continuation_lines(text: str, color: str) -> Text:
+def _continuation_lines(text: str, color: str, *, more: int = 0) -> Text:
     """上一步 ⏺ 的续行 —— 用 '  ⎿  ' 连接符,跟 Claude Code 一致。
-    一次工具调用 = 一个 ⏺ tool_notice + 缩进的 ⎿ tool_result。"""
+    一次工具调用 = 一个 ⏺ tool_notice + 缩进的 ⎿ tool_result。
+    more>0 时在末尾补一行 DIM '… +N lines',表示结果被折叠。"""
     out = Text()
     for i, line in enumerate(text.split("\n")):
         if i == 0:
@@ -124,6 +125,29 @@ def _continuation_lines(text: str, color: str) -> Text:
         else:
             out.append("\n     ")
         out.append(line, style=color if i == 0 else "")
+    if more:
+        out.append("\n     ")
+        out.append(f"… +{more} lines", style=theme.DIM)
+    return out
+
+
+def _tool_notice_lines(name: str, preview: str, dot_color: str) -> Text:
+    """⏺ name(preview) —— preview 多行时续行对齐到 '(' 之后,跟 Claude Code 一致。
+
+    对齐列宽 = len('⏺ ') + len(name) + len('(') = 2 + len(name) + 1。
+    (与 _step_lines 一样假设 ⏺ 占 1 列 + 1 空格。)
+    """
+    out = Text()
+    out.append("⏺ ", style=dot_color)
+    if not preview:
+        out.append(name)
+        return out
+    indent = " " * (2 + len(name) + 1)
+    body = f"{name}({preview})"
+    for i, line in enumerate(body.split("\n")):
+        if i:
+            out.append("\n" + indent)
+        out.append(line)
     return out
 
 
@@ -286,10 +310,13 @@ class StreamingAgentRenderer:
         self._opened = False
         self._text_open = False          # 当前是否在一段未关闭的 text segment 里
         self._pending_indent = False     # 刚写完 \n,下一个非 \n 字符前要补 '  '
-        # 等 result 来时一起打的 tool_notice: (name, preview, color_hint)
+        # 等 result 来时一起打的 tool_notice **队列** (FIFO): [(name, preview, color_hint), ...]
+        # 为什么要队列:执行器 Phase A 把同一轮所有 on_tool_call 先触发完(全部入队),
+        # Phase C 才按原顺序逐个 on_tool_result —— 单个 slot 会被后来的 notice 覆盖,
+        # 导致前面的调用丢失。队列让每个结果按 FIFO 配对到自己的 ⏺。
         # color_hint=None → 让 result 推断 (✅绿/❌红/其它DIM);
         # 显式传入 (e.g. theme.ERR for 拒绝) → 强制用这个色
-        self._pending_tool: Optional[tuple[str, str, Optional[str]]] = None
+        self._pending: List[tuple[str, str, Optional[str]]] = []
 
     # ── 内部 helpers ─────────────────────────────────────────
     def _ensure_started(self) -> None:
@@ -311,18 +338,16 @@ class StreamingAgentRenderer:
         self._pending_indent = False
 
     def _flush_tool_notice(self, result_color: Optional[str] = None) -> None:
-        """把 pending 的 tool_notice 打到屏上。
+        """把**队首** pending notice 打到屏上(FIFO,跟 Phase C 结果上报顺序一致)。
 
         颜色优先级:tool_notice(color=...) 显式给的 hint > result 推断色 > DEFAULT。
-        没有 pending 时 no-op,允许 tool_result 在无 tool_notice 的情况下调用。
+        队列空时 no-op,允许 tool_result 在无 tool_notice 的情况下调用。
         """
-        if self._pending_tool is None:
+        if not self._pending:
             return
-        name, preview, hint_color = self._pending_tool
+        name, preview, hint_color = self._pending.pop(0)
         color = hint_color or result_color or theme.DEFAULT
-        body = name if not preview else f"{name}({preview})"
-        self.console.print(_step_lines(body, color, from_ansi=False))
-        self._pending_tool = None
+        self.console.print(_tool_notice_lines(name, preview, color))
 
     # ── 公共回调 ──────────────────────────────────────────
     def text_chunk(self, chunk: str) -> None:
@@ -359,18 +384,18 @@ class StreamingAgentRenderer:
         """
         self._ensure_started()
         self._close_text()
-        self._pending_tool = (name, args_preview, color)
+        self._pending.append((name, args_preview, color))
 
     def pop_last_tool_notice(self) -> Optional[tuple[str, str]]:
         """弹出 pending 的 tool_notice,返回 (name, preview)。
 
         用于 permission gate:审批前把还没打印的 pending notice 弹出,审批后
         由调用方在新 renderer 上重新 tool_notice() 登记,等结果回来再统一染色。
+        弹**队尾**(刚由 _on_tool 登记的当前审批工具)。
         """
-        if self._pending_tool is None:
+        if not self._pending:
             return None
-        name, preview, _color = self._pending_tool
-        self._pending_tool = None
+        name, preview, _color = self._pending.pop()
         return name, preview
 
     def tool_diff_result(self, summary_status: str, diff_text: str, *,
@@ -396,33 +421,35 @@ class StreamingAgentRenderer:
 
     def tool_result(self, text: str, *,
                     elapsed_sec: Optional[float] = None,
-                    max_lines: int = 1, max_line_chars: int = 300) -> None:
+                    max_lines: int = 4, max_line_chars: int = 300) -> None:
         """工具跑完(普通文本结果):打 '⏺ tool(args)\\n  ⎿ result'。
 
-        默认只显示结果第一行(Claude Code 折叠风格)。模型还是拿到完整结果,
-        所以"细节"没丢,只是 UI 不堆。
+        默认折叠到前 4 行,超出补 '… +N lines'(Claude Code 风格)。模型始终
+        拿到完整结果,所以"细节"没丢,只是 UI 不堆。
         """
         if not text:
             return
         self._ensure_started()
         self._close_text()
-        # 1. 处理结果文本:每行截宽 + 限行数 + elapsed 拼到首行末
+        # 1. 处理结果文本:每行截宽 + 折叠行数 + elapsed 拼到首行末
         lines = text.rstrip("\n").splitlines() or [""]
         clipped = [
             (ln if len(ln) <= max_line_chars else ln[:max_line_chars - 1] + "…")
             for ln in lines
         ]
+        hidden = 0
         if len(clipped) > max_lines:
+            hidden = len(clipped) - max_lines
             clipped = clipped[:max_lines]
         body = "\n".join(clipped)
         if elapsed_sec is not None:
             body_lines = body.split("\n")
             body_lines[0] = f"{body_lines[0]}  ·  {_fmt_elapsed(elapsed_sec)}"
             body = "\n".join(body_lines)
-        # 2. 用结果推断的颜色打 pending tool_notice,再接 ⎿ result
+        # 2. 用结果推断的颜色打 pending tool_notice,再接 ⎿ result(+折叠标记)
         color = _result_dot_color(body)
         self._flush_tool_notice(result_color=color)
-        self.console.print(_continuation_lines(body, color))
+        self.console.print(_continuation_lines(body, color, more=hidden))
 
     def close(self, tools_used: int = 0, elapsed_seconds: float = 0.0,
               tokens_in: int = 0, tokens_out: int = 0) -> None:
@@ -430,8 +457,10 @@ class StreamingAgentRenderer:
         if not self._opened:
             return
         self._close_text()
-        # 极端兜底:tool_notice 后没等到 result 就 close(理论不会发生),用默认色 flush
-        self._flush_tool_notice()
+        # 兜底:notice 入队后没等到对应 result 就 close —— 把残留的全部打成头(默认色),
+        # 不吞掉,免得调用被静默丢失(如某些工具 report=False 不上报结果)。
+        while self._pending:
+            self._flush_tool_notice()
 
         parts: list[str] = []
         if tools_used > 0:

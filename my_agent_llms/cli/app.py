@@ -168,25 +168,49 @@ def _smart_elide(s: str, max_len: int) -> str:
     return s[:max_len - 1] + "…"
 
 
+def _elide_command_block(s: str, *, max_line: int = 160, max_lines: int = 12) -> str:
+    """多行字符串(典型:Bash 命令)按行保留,每行单独截宽,行数超限尾部折叠。
+
+    这样 ⏺ Bash(...) 能像 Claude Code 一样把命令多行铺开 + 续行对齐括号,
+    而不是被 _smart_elide 压成一行尾部 '…'。
+    """
+    lines = s.split("\n")
+    kept = [
+        (ln if len(ln) <= max_line else ln[:max_line - 1] + "…")
+        for ln in lines[:max_lines]
+    ]
+    if len(lines) > max_lines:
+        kept.append(f"… +{len(lines) - max_lines} lines")
+    return "\n".join(kept)
+
+
 def _preview_tool_args(args: Dict, *, max_total: int = 500, max_value: int = 80) -> str:
     """格式化工具参数给 ⏺ tool_notice 用。限度放宽,跟 Claude Code 一致 ——
     用户得看清模型到底准备调什么(尤其是命令行/路径类参数);单值过长才截断。
-    字符串值统一走 _smart_elide:路径感知 + $HOME 替换,避免连排调用堆出噪音。"""
+    单行字符串走 _smart_elide(路径感知 + $HOME 替换);多行字符串(Bash 命令
+    等)走 _elide_command_block,保留换行让渲染层多行铺开。"""
     if not args:
         return ""
     # Claude Code 风:全部位置式,丢掉 key=,值原样显示(字符串不加引号);
     # 单/多参数走同一条路,避免 ReadFile(path) vs ReadFile(path='x', offset=200) 风格不一致
     items = []
+    multiline = False
     for v in args.values():
         if isinstance(v, str):
-            items.append(_smart_elide(v, max_len=max_value))
+            if "\n" in v:
+                multiline = True
+                items.append(_elide_command_block(v))
+            else:
+                items.append(_smart_elide(v, max_len=max_value))
         else:
             v_repr = repr(v)
             if len(v_repr) > max_value:
                 v_repr = v_repr[:max_value - 3] + "..."
             items.append(v_repr)
     full = ", ".join(items)
-    if len(full) > max_total:
+    # 单行预览才做整体长度兜底;多行预览靠 _elide_command_block 自控规模,
+    # 再用 max_total 末尾截断会把命令尾巴(含右括号)切掉,故跳过。
+    if not multiline and len(full) > max_total:
         full = full[:max_total - 3] + "..."
     return full
 
