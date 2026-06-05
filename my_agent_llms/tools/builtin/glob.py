@@ -33,6 +33,9 @@ class GlobTool(Tool):
         pattern = str(parameters.get("pattern") or "").strip()
         if not pattern:
             return "❌ 缺少 pattern 参数"
+        # 锁根护栏:pattern 本身不能含 .. 或绝对路径,否则 base.glob("../*") 可逃出 root
+        if pattern.startswith("/") or ".." in Path(pattern).parts:
+            return "❌ pattern 不能含 .. 或绝对路径(只能在工作区内搜)"
         path = str(parameters.get("path") or ".").strip() or "."
         try:
             base = self.ws.resolve(path)

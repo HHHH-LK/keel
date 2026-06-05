@@ -31,3 +31,13 @@ def test_no_match(tmp_path):
 
 def test_out_of_root_rejected(tmp_path):
     assert "❌" in GlobTool(Workspace(tmp_path)).run({"pattern": "*", "path": "../.."})
+
+
+def test_pattern_dotdot_cannot_escape_root(tmp_path):
+    # 安全:root 外有文件,pattern 用 ../ 或绝对路径不能把它捞出来
+    root = tmp_path / "root"; root.mkdir()
+    (tmp_path / "outside.py").write_text("secret", encoding="utf-8")
+    tool = GlobTool(Workspace(root))
+    assert "❌" in tool.run({"pattern": "../*.py"})
+    assert "❌" in tool.run({"pattern": "/etc/*"})
+    assert "outside.py" not in tool.run({"pattern": "**/*.py"})
