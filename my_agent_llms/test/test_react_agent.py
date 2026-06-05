@@ -93,7 +93,10 @@ class RunWithoutToolsTest(unittest.TestCase):
         agent.run("hi")
 
         self.assertEqual(llm.calls[0][0]["role"], "system")
-        self.assertEqual(llm.calls[0][0]["content"], "你是测试助手")
+        # 基类 get_system_prompt 会把用户 prompt 放前、诚实协议(HONESTY_CONTRACT)拼后
+        system_content = llm.calls[0][0]["content"]
+        self.assertTrue(system_content.startswith("你是测试助手"))
+        self.assertIn("关于诚实回答的协议", system_content)
 
 
 class RunWithToolsTest(unittest.TestCase):
