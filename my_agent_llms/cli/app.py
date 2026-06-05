@@ -196,13 +196,13 @@ def _preview_tool_args(args: Dict, *, max_total: int = 500, max_value: int = 80)
 # ────────────────────────────────────────────────────────────
 
 def _resolve_storage_dirs(base: Path, cwd: Path):
-    """返回 (项目层 storage_dir, 用户层 storage_dir)。
+    """返回 (项目层 storage_dir, 用户层 storage_dir, project_id)。
     项目根 = cwd 向上最近 .git 祖先,找不到用 cwd。"""
     from my_agent_llms.memory.project_root import (
-        resolve_project_root, project_storage_dir, user_storage_dir,
+        resolve_project_root, project_storage_dir, user_storage_dir, project_id,
     )
     root = resolve_project_root(cwd)
-    return project_storage_dir(base, root), user_storage_dir(base)
+    return project_storage_dir(base, root), user_storage_dir(base), project_id(root)
 
 
 def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
@@ -223,12 +223,13 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
         return None
 
     base_dir = Path(os.getenv("MY_CHAT_STORAGE", str(DEFAULT_STORAGE_DIR)))
-    storage_dir, user_dir = _resolve_storage_dirs(base_dir, Path.cwd())
+    storage_dir, user_dir, pid = _resolve_storage_dirs(base_dir, Path.cwd())
     console.print(f"[dim]项目记忆: {storage_dir}[/dim]")
     mem_cfg_data = cfg["memory"]
     memory_config = MemoryConfig(
         storage_dir=storage_dir,
         user_storage_dir=user_dir,
+        project_id=pid,
         cold_backend=mem_cfg_data["cold_backend"],
         vector_backend=mem_cfg_data["vector_backend"],
         l1_max_tokens=4000,

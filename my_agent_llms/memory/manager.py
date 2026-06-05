@@ -126,6 +126,16 @@ class MemoryManager:
         else:
             self.user_layer = None
 
+        # ── 跨项目提升:台账 + 项目层写主图钩子 ──
+        from my_agent_llms.memory.kg import KnowledgeGraphConflictDetector
+        self._promotion_ledger = None
+        if (self.user_layer is not None
+                and self.config.project_id
+                and isinstance(self.conflict_detector, KnowledgeGraphConflictDetector)):
+            from my_agent_llms.memory.promotion_ledger import PromotionLedger
+            self._promotion_ledger = PromotionLedger(self.config.user_kg_path())
+            self.conflict_detector.on_main_write = self._on_project_main_write
+
         self.tiers: Dict[str, MemoryTier] = {
             self.working.name: self.working,
             self.summary.name: self.summary,
@@ -720,6 +730,15 @@ class MemoryManager:
         if format == "dot":
             return store.to_dot(include_inactive=include_inactive)
         raise ValueError(f"未知格式: {format!r},支持 'mermaid' / 'dot'")
+
+    def _on_project_main_write(self, rel_data: dict) -> None:
+        """项目层每写一条主图关系 → 记跨项目台账;达阈值则提升到用户层 KG。"""
+        if self._promotion_ledger is None or self.user_layer is None:
+            return
+        key = self.conflict_detector.store.pending_key(rel_data)
+        count = self._promotion_ledger.record(key, self.config.project_id)
+        if count >= self.config.user_promote_min_projects:
+            self.user_layer.ingest_confirmed_fact(rel_data)
 
     def recall_facts(self, query: str, max_facts: int = 8) -> List[str]:
         """从 KG 拿当前活跃事实(extreme 强度时有用)。双层:项目层 + 用户层,

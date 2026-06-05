@@ -75,6 +75,7 @@ class MemoryConfig(BaseModel):
     # ── 双层记忆(用户层) ───────────────────────────────────
     user_storage_dir: Optional[Path] = None       # None → 不启用用户层(仅项目层)
     user_promote_min_projects: int = 2            # 同一 triple_key 出现在 ≥N 个项目 → 提升用户层
+    project_id: Optional[str] = None              # 当前项目标识(跨项目提升台账用)
 
     # ── tick 调度 ──────────────────────────────────────────
     tick_mode: TickMode = "sync"
