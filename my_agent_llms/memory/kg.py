@@ -722,6 +722,9 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         self.embedder = embedder              # 有则开语义路径,无则降级为"图遍历+关键词"
         self.pending_promote_hits = pending_promote_hits  # pending 累积到几次证据才晋升主图
         self._rel_emb_cache: Dict[str, List[float]] = {}  # rel_id → 关系串向量(三元组不可变,可缓存)
+        # 写主图钩子:每成功写一条主图关系后调 on_main_write(rel_data)。
+        # 上层(MemoryManager)用它记跨项目台账 + 触发提升。默认 None=不挂。
+        self.on_main_write = None
 
     def query_facts(self, query: str, max_facts: int = 8) -> List[str]:
         """根据自然语言 query,从 KG 找当前有效的相关事实(混合检索 + RRF)。
@@ -909,7 +912,7 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
                     continue
                 # 证据累积达阈值 → 晋升:移出 pending,转主图
                 self.store.remove_pending(rel_data)
-            superseded_item_ids |= self._write_relation_to_main(
+            superseded_item_ids |= self._write_main_and_notify(
                 rel_data, source_item_id, source_type, new_authority, event_time, now,
             )
 
@@ -996,3 +999,36 @@ class KnowledgeGraphConflictDetector(ConflictDetector):
         )
         self.store.add_relation(new_rel)
         return superseded_item_ids
+
+    def _write_main_and_notify(
+        self,
+        rel_data: dict,
+        source_item_id: Optional[str],
+        source_type: str,
+        new_authority: int,
+        event_time: datetime,
+        now: datetime,
+    ) -> set:
+        """调 _write_relation_to_main 后触发 on_main_write 钩子(若已设置)。
+        钩子异常不影响主写入。返回被取代的 item_id 集合(透传自 _write_relation_to_main)。
+        """
+        result = self._write_relation_to_main(
+            rel_data, source_item_id, source_type, new_authority, event_time, now,
+        )
+        if self.on_main_write is not None:
+            try:
+                self.on_main_write(rel_data)
+            except Exception:
+                pass  # 钩子异常不得影响主写入
+        return result
+
+    def apply_confirmed_relation(
+        self, rel_data: dict, *, source_type: str = "user_promoted"
+    ) -> None:
+        """把一条已确认的事实直写主图(跳过 pending/grounding)。
+        用于跨项目提升:把项目层反复印证的事实灌进用户层 KG。
+        """
+        now = datetime.now()
+        self._write_main_and_notify(
+            rel_data, None, source_type, authority_of(source_type), now, now,
+        )
