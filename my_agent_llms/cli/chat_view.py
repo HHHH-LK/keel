@@ -251,10 +251,11 @@ def render_user(console: Console, text: str) -> None:
 
 def render_agent(console: Console, reply: str, *,
                  tools_used: int = 0, elapsed_seconds: float = 0.0) -> None:
-    """Render an AI reply: ⏺ + inline-markdown body (Claude Code 风格)。"""
+    """Render an AI reply: ⏺ + 全量 markdown body (Claude Code 风格)。
+    用于非流式/流式无 chunk 兜底,与流式主路径(_framed_render)一致走 render_markdown。"""
     console.print()
-    inline = _render_inline_markdown(reply)
-    console.print(_step_lines_from_text(inline, theme.DEFAULT))
+    body = render_markdown(reply, max(20, console.width - 2))
+    console.print(_step_lines_from_text(body, theme.DEFAULT))
 
 
 def render_agent_error(console: Console, message: str) -> None:
