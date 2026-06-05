@@ -15,10 +15,12 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 from rich.console import Console
+from rich.live import Live
 from rich.markup import escape as _rich_escape
 from rich.text import Text
 
 from . import theme
+from .markdown_render import render_markdown
 
 
 # Claude Code 风格的极简 inline markdown 渲染:
@@ -33,11 +35,8 @@ _ITALIC_RE      = re.compile(r"(?<![*\w])\*([^*\n]+?)\*(?!\w)")
 
 def _render_inline_markdown(text: str) -> Text:
     """text → Rich Text,只渲 inline markdown (bold/italic/code)。其它原文保留。"""
-    safe = _rich_escape(text)      # 先把用户写的 [foo] 转义掉,免得跟 rich markup 冲突
-    safe = _INLINE_CODE_RE.sub(r"[dim bold]\1[/]", safe)
-    safe = _BOLD_RE.sub(r"[bold]\1[/]", safe)
-    safe = _ITALIC_RE.sub(r"[italic]\1[/]", safe)
-    return Text.from_markup(safe)
+    from .markdown_render import render_inline
+    return render_inline(text)
 
 
 def _step_lines_from_text(text_obj: Text, dot_color: str) -> Text:
@@ -317,6 +316,9 @@ class StreamingAgentRenderer:
         # color_hint=None → 让 result 推断 (✅绿/❌红/其它DIM);
         # 显式传入 (e.g. theme.ERR for 拒绝) → 强制用这个色
         self._pending: List[tuple[str, str, Optional[str]]] = []
+        self._text_buf = ""
+        self._live: Optional[Live] = None
+        self._use_live = bool(getattr(self.console, "is_terminal", False))
 
     # ── 内部 helpers ─────────────────────────────────────────
     def _ensure_started(self) -> None:
@@ -326,12 +328,23 @@ class StreamingAgentRenderer:
         self._opened = True
         self.console.print()
 
+    def _framed_render(self, text: str) -> Text:
+        """累积文本渲成 markdown,再包 ⏺ + 续行缩进的 strip 框。"""
+        width = max(20, self.console.width - 2)
+        body = render_markdown(text, width)
+        return _step_lines_from_text(body, theme.DEFAULT)
+
     def _close_text(self) -> None:
         """text segment 切段:确保当前一行已结束,后续非 text 输出从行首开始。"""
         if not self._text_open:
             return
-        # _pending_indent=True 意味着我们刚写过 \n,行已经断了,不用再补
-        if not self._pending_indent:
+        if self._live is not None:
+            self._live.update(self._framed_render(self._text_buf))
+            self._live.refresh()
+            self._live.stop()
+            self._live = None
+            self._text_buf = ""
+        elif not self._pending_indent:
             self.console.file.write("\n")
             self.console.file.flush()
         self._text_open = False
@@ -354,27 +367,31 @@ class StreamingAgentRenderer:
         if not chunk:
             return
         self._ensure_started()
+        if not self._use_live:
+            # 非 tty:保持原 raw 行为(⏺ 起头 + 换行补 2 空格)
+            if not self._text_open:
+                self.console.print("⏺ ", style=theme.DEFAULT, end="")
+                self._text_open = True
+                self._pending_indent = False
+            buf: list[str] = []
+            for ch in chunk:
+                if ch == "\n":
+                    buf.append("\n"); self._pending_indent = True
+                else:
+                    if self._pending_indent:
+                        buf.append("  "); self._pending_indent = False
+                    buf.append(ch)
+            self.console.file.write("".join(buf)); self.console.file.flush()
+            return
+        # tty:累积 + Live 重绘 markdown
         if not self._text_open:
-            # 新 text segment 起头:Rich 打彩色 '⏺ ',然后切到 raw write 模式
-            self.console.print("⏺ ", style=theme.DEFAULT, end="")
             self._text_open = True
-            self._pending_indent = False
-
-        # 字符级推送:换行后补 2 空格缩进,保持 step 视觉。
-        # _pending_indent 跨 chunk 保持状态 —— 如果上个 chunk 以 \n 结尾,
-        # 这个 chunk 的第一个非 \n 字符前补 '  '。
-        buf: list[str] = []
-        for ch in chunk:
-            if ch == "\n":
-                buf.append("\n")
-                self._pending_indent = True
-            else:
-                if self._pending_indent:
-                    buf.append("  ")
-                    self._pending_indent = False
-                buf.append(ch)
-        self.console.file.write("".join(buf))
-        self.console.file.flush()
+            self._text_buf = ""
+            self._live = Live(console=self.console, refresh_per_second=12,
+                              transient=False, auto_refresh=True)
+            self._live.start()
+        self._text_buf += chunk
+        self._live.update(self._framed_render(self._text_buf))
 
     def tool_notice(self, name: str, args_preview: str = "",
                     color: Optional[str] = None) -> None:
