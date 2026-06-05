@@ -735,6 +735,8 @@ class MemoryManager:
         seen = set()
         out: List[str] = []
         for f in [*project_facts, *user_facts]:
+            if not f:
+                continue                       # 跳过 None / 空串,防御性
             key = " ".join(f.lower().split())
             if key in seen:
                 continue
