@@ -98,6 +98,7 @@ class GrepTool(Tool):
         if proc.returncode >= 2:
             return f"❌ rg 错误: {proc.stderr.strip()[:200]}"
         lines = proc.stdout.rstrip("\n").split("\n") if proc.stdout.strip() else []
+        lines = [ln[2:] if ln.startswith("./") else ln for ln in lines]  # 去 rg 的 ./ 前缀,与兜底路径一致
         if not lines:
             return "(无匹配)"
         cap = _MAX_FILES if mode == "files" else _MAX_CONTENT_LINES
@@ -109,6 +110,7 @@ class GrepTool(Tool):
         if base.is_file() and glob and not fnmatch.fnmatch(base.name, glob):
             files = []
         content: List[str] = []
+        seen: set = set()                 # (rel, 行号) 去重,防相邻命中的上下文窗口重叠出重复行
         match_files: List[str] = []
         for f in files:
             try:
@@ -131,6 +133,9 @@ class GrepTool(Tool):
                         rel = self.ws.relative(f)
                         lo, hi = max(0, idx - ctx), min(len(flines), idx + ctx + 1)
                         for j in range(lo, hi):
+                            if (rel, j) in seen:
+                                continue
+                            seen.add((rel, j))
                             content.append(f"{rel}:{j + 1}: {flines[j]}")
             if hit and mode == "files":
                 match_files.append(self.ws.relative(f))

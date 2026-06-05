@@ -58,6 +58,18 @@ def test_python_fallback_when_no_rg(tmp_path, monkeypatch):
     assert "a.py:3:" in out
 
 
+def test_python_fallback_context_no_duplicate_lines(tmp_path, monkeypatch):
+    import my_agent_llms.tools.builtin.grep as g
+    monkeypatch.setattr(g.shutil, "which", lambda _name: None)
+    # 相邻两行都命中 + context=1 → 窗口重叠;不能输出重复行
+    (tmp_path / "m.py").write_text("a0\nhit1\nhit2\na3\n", encoding="utf-8")
+    ws = Workspace(tmp_path)
+    out = g.GrepTool(ws).run({"pattern": "hit", "context": 1, "glob": "m.py"})
+    lines = out.split("\n")
+    assert len(lines) == len(set(lines))          # 无重复
+    assert sum("hit1" in l for l in lines) == 1    # hit1 只出现一次
+
+
 def test_python_fallback_skips_binary(tmp_path, monkeypatch):
     import my_agent_llms.tools.builtin.grep as g
     monkeypatch.setattr(g.shutil, "which", lambda _name: None)
