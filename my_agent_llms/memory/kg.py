@@ -227,6 +227,9 @@ class KGStore:
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(str(path), check_same_thread=False)
+            # WAL: 读不阻塞写 + 同文件多连接更耐并发;busy_timeout: 写锁竞争时等待而非立刻报错
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_DDL)
         self.conn.commit()
