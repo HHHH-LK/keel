@@ -72,6 +72,10 @@ class MemoryConfig(BaseModel):
     cold_backend: ColdBackendType = "jsonl"
     vector_backend: VectorBackendType = "memory"
 
+    # ── 双层记忆(用户层) ───────────────────────────────────
+    user_storage_dir: Optional[Path] = None       # None → 不启用用户层(仅项目层)
+    user_promote_min_projects: int = 2            # 同一 triple_key 出现在 ≥N 个项目 → 提升用户层
+
     # ── tick 调度 ──────────────────────────────────────────
     tick_mode: TickMode = "sync"
     tick_every_n_turns: int = 1
@@ -102,3 +106,18 @@ class MemoryConfig(BaseModel):
         if self.storage_dir is None:
             return None
         return self.storage_dir / "memory.db"
+
+    def user_kg_path(self) -> Optional[Path]:
+        if self.user_storage_dir is None:
+            return None
+        return self.user_storage_dir / "kg.db"
+
+    def user_vector_path(self) -> Optional[Path]:
+        if self.user_storage_dir is None or self.vector_backend != "sqlite":
+            return None
+        return self.user_storage_dir / "memory.db"
+
+    def user_playbook_path(self) -> Optional[Path]:
+        if self.user_storage_dir is None:
+            return None
+        return self.user_storage_dir / "memory.db"
