@@ -1,0 +1,12 @@
+{"content": "我对花生过敏", "role": "user", "task_turn": false, "expect_promote": true, "expect_type": "hard_constraint"}
+{"content": "不能吃海鲜", "role": "user", "task_turn": false, "expect_promote": true, "expect_type": "hard_constraint"}
+{"content": "我必须每天吃降压药", "role": "user", "task_turn": false, "expect_promote": true, "expect_type": "hard_constraint"}
+{"content": "我叫张三", "role": "user", "task_turn": false, "expect_promote": true, "expect_type": "identity"}
+{"content": "我是文件管理员", "role": "user", "task_turn": false, "expect_promote": true, "expect_type": "identity"}
+{"content": "回答里必须包含编程语言这四个字", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "state"}
+{"content": "用一句话介绍 Python,必须包含编程语言", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "state"}
+{"content": "创建一个文件 result.json,必须包含字段 status", "role": "user", "task_turn": true, "expect_promote": false, "expect_type": "state"}
+{"content": "生成报告,严禁出现错别字", "role": "user", "task_turn": true, "expect_promote": false, "expect_type": "state"}
+{"content": "你好呀今天天气不错", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "state"}
+{"content": "我喜欢喝美式咖啡", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "preference"}
+{"content": "我喜欢生成艺术", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "preference"}
