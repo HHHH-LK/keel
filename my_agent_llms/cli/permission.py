@@ -69,6 +69,21 @@ def _read_decision_key() -> "PermissionDecision":
         decision["v"] = PermissionDecision.DENY
         event.app.exit()
 
+    @kb.add("1")
+    def _opt1(event):
+        decision["v"] = PermissionDecision.ALLOW_ONCE
+        event.app.exit()
+
+    @kb.add("2")
+    def _opt2(event):
+        decision["v"] = PermissionDecision.ALLOW_ALWAYS
+        event.app.exit()
+
+    @kb.add("3")
+    def _opt3(event):
+        decision["v"] = PermissionDecision.DENY
+        event.app.exit()
+
     app = Application(
         layout=Layout(Window(FormattedTextControl(""), height=0)),
         key_bindings=kb,
@@ -98,16 +113,14 @@ def prompt_permission(name: str, args: Dict[str, Any], preview: str) -> "Permiss
         else preview
     )
     console.print(
-        Panel(body, title=f"审批工具调用  {name}", border_style=theme.AGENT)
+        Panel(body, title=f"  {name}", title_align="left", border_style=theme.AGENT)
     )
+    console.print("  Do you want to proceed?")
     console.print(
-        f"  [{theme.DIM}][y] 允许   [a] 总是允许   [n] 拒绝   [Enter=y · Esc=n][/]"
+        f"  [{theme.OK}]1.[/] Yes   [{theme.OK}]2.[/] Yes, 本会话总是允许   "
+        f"[{theme.ERR}]3.[/] No   [{theme.DIM}](1/Enter=Yes · 3/Esc=No)[/]"
     )
     decision = _read_decision_key()
-    # 跟 Claude Code 一致:按完键就把 hint 那一行抹掉,换成决策反馈
-    # ANSI:cursor up 1 行 → 清整行 → 回到列 0
-    sys.stdout.write("\x1b[1A\x1b[2K\r")
-    sys.stdout.flush()
     if decision is PermissionDecision.DENY:
         console.print(f"  [{theme.ERR}]✗ 已拒绝[/]")
     elif decision is PermissionDecision.ALLOW_ALWAYS:

@@ -73,3 +73,15 @@ def test_decision_echo_when_rejected(monkeypatch):
     out = buf.getvalue()
     assert "已拒绝" in out
     assert "已同意" not in out
+
+
+def test_prompt_permission_shows_numbered_options(monkeypatch):
+    """审批框应展示 Claude Code 风格 1/2/3 编号选项。"""
+    buf = _capture_console(monkeypatch)
+    monkeypatch.setattr(perm, "_is_tty", lambda: True)
+    monkeypatch.setattr(perm, "_read_decision_key",
+                        lambda: PermissionDecision.ALLOW_ONCE)
+    perm.prompt_permission("write_file", {"path": "a.py"}, "preview")
+    out = buf.getvalue()
+    assert "1." in out and "2." in out and "3." in out
+    assert "Yes" in out or "允许" in out
