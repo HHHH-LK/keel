@@ -238,7 +238,10 @@ class MyFunctionCallAgent(Agent):
                     logger.exception("on_text_chunk 回调异常,忽略")
 
         final_response = self._run_response_hooks(input_text, final_response, messages)
-        self._finalize_turn(input_text, final_response)
+        # TDD 子运行(_in_tdd)期间不在这里写 memory:由顶层 _run_tdd 统一补记一次,
+        # 避免把实现阶段的子提示词("请写实现…")当成用户输入污染记忆。
+        if not getattr(self, "_in_tdd", False):
+            self._finalize_turn(input_text, final_response)
         self.last_tool_call_count = tool_call_count
         logger.debug(f"{self.name} 响应完成")
         return final_response
@@ -284,6 +287,9 @@ class MyFunctionCallAgent(Agent):
         return classify(self.llm, input_text).use_tdd
 
     def _run_tdd(self, input_text: str) -> str:
+        # 注意(Phase 1 已知限制):TDD 路径不透传 run() 的流式回调
+        # (on_text_chunk/on_tool_call 等),CLI 在 TDD 期间无过程输出,只在结束拿最终串。
+        # 透传回调留作后续(与流式渲染一并做)。
         from my_agent_llms.tdd import run_tdd
         self._in_tdd = True
         saved_verify = self.enable_verify
@@ -292,16 +298,21 @@ class MyFunctionCallAgent(Agent):
             result = run_tdd(
                 llm=self.llm, workspace=self.workspace, task=input_text,
                 implement_fn=self._tdd_implement,
-                user_override=None)
+                # 已由 _tdd_should_run 确认走 TDD,免得 orchestrator 再 classify 一次(省一次 LLM 调用)
+                user_override=True)
             if result.degraded:
-                # 降级:回到普通工具循环跑一遍(此时 _in_tdd=True,不会再触发 TDD)。
-                # 先恢复 verify,让降级回退仍享有事后验证这层保险。
+                # 降级:回普通工具循环跑一遍(_in_tdd=True 防再触发 TDD)。
+                # 先恢复 verify,让降级回退仍享有事后验证保险。
                 self.enable_verify = saved_verify
-                return self.run(input_text)
-            return result.message
+                message = self.run(input_text)
+            else:
+                message = result.message
         finally:
             self._in_tdd = False
             self.enable_verify = saved_verify
+        # 顶层补记一次 memory:原始任务 ↔ 最终结果(嵌套子 run 已被抑制 finalize)。
+        self._finalize_turn(input_text, message)
+        return message
 
     def _tdd_implement(self, task: str, test_paths, feedback: str) -> None:
         """实现回调:让主 agent 用工具循环写实现去满足测试(不许改测试)。"""
