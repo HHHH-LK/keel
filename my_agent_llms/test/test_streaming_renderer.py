@@ -87,7 +87,11 @@ def test_reasoning_chunk_commits_dim_thinking_block():
     con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
     r = chat_view.StreamingAgentRenderer(con)
     r.reasoning_chunk("我先分析一下\n第二行思考\n")
-    r.text_chunk("正式回答")     # 切到 text 段,应先 commit reasoning
+    r.text_chunk("正式回答")     # 切到 text 段,应先 commit reasoning 段
+    # 关键(state 级,不依赖 StringIO Live 帧泄漏):text_chunk 必须已收尾 reasoning 段,
+    # 否则旧 reasoning Live 不停 + 正文 buf 在 _close_text 被跳过丢失。
+    assert r._reason_open is False
+    assert r._text_open is True
     r.close()
     out = re.sub(r"\x1b\[[0-9;]*m", "", con.file.getvalue())
     assert "我先分析一下" in out
@@ -102,5 +106,5 @@ def test_reasoning_folds_when_long():
     r.close()
     out = re.sub(r"\x1b\[[0-9;]*m", "", con.file.getvalue())
     assert "思考0" in out
-    assert "+7 行" in out or "+7 lines" in out   # 首3行 + 余7
+    assert "+7 行" in out                         # 首3行 + 余7(思考)
     assert "思考9" not in out

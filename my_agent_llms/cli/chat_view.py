@@ -262,7 +262,7 @@ def _fmt_elapsed(seconds: float) -> str:
 
 def _summarize_read(text: str) -> Optional[str]:
     n = len(text.rstrip("\n").split("\n")) if text.strip() else 0
-    return f"Read {n} lines" if n else None
+    return f"Read {n} line{'s' if n != 1 else ''}" if n else None
 
 
 def _summarize_grep(text: str) -> Optional[str]:
@@ -488,6 +488,10 @@ class StreamingAgentRenderer:
         if not chunk:
             return
         self._ensure_started()
+        # 与 reasoning 段互斥:从思考切到正文前先收尾思考段(commit ✻ 块 + stop 旧 Live)。
+        # 否则旧 reasoning Live 不被停 → 二次 Live 冲突 + 正文 buf 在 _close_text 被跳过丢失。
+        if self._reason_open:
+            self._close_text()
         if not self._use_live:
             # 非 tty:保持原 raw 行为(⏺ 起头 + 换行补 2 空格)
             if not self._text_open:
