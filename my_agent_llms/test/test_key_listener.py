@@ -21,3 +21,12 @@ def test_context_manager_returns_self_and_restores(monkeypatch):
     e = EscListener()
     with e as same:
         assert same is e
+
+
+def test_pause_resume_toggles_state():
+    e = EscListener()
+    assert e._paused.is_set() is False
+    e.pause()
+    assert e._paused.is_set() is True
+    e.resume()
+    assert e._paused.is_set() is False
