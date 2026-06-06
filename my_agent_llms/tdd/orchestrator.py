@@ -52,10 +52,11 @@ def run_tdd(*, llm, workspace, task: str,
             test_paths.append(t.relpath)
             hashes[t.relpath] = _digest(t.content)
 
-        # ── 阶段2:红门(硬)──
-        red = red_gate(runner_fn(str(workspace.root), test_paths))
+        # ── 阶段2:红门(硬)── 只跑一次 pytest,结果同时用于判定与反馈
+        red_result = runner_fn(str(workspace.root), test_paths)
+        red = red_gate(red_result)
         if red != RedVerdict.PROCEED:
-            feedback = author_feedback(red, runner_fn(str(workspace.root), test_paths))
+            feedback = author_feedback(red, red_result)
             continue
 
         # ── 阶段3+4:实现 → 绿门(impl_budget 轮)──
