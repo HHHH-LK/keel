@@ -287,17 +287,20 @@ def render_agent_error(console: Console, message: str) -> None:
 
 
 class StreamingAgentRenderer:
-    """无 Live 真·流式渲染器(Claude Code 风格)。
+    """流式渲染器(Claude Code 风格)。
 
     实现要点:
-    - text_chunk 直接 console.file.write(chunk) + flush,字符级推送到 stdout。
-      第一个 chunk 之前打 '⏺ ' 起头,换行后下一行非 '\\n' 字符前补 '  ' 缩进,
-      保证一段连续 text = 一个 ⏺ step,跟 Claude Code 一致。
+    - tty 路径:text_chunk 把文本累积进 _text_buf,并用一个 transient=True /
+      auto_refresh=False 的 Live 渲染活跃段的尾部(_active_frame 截断防超高)。
+      段落结束时(_close_text)stop 掉 Live(尾区帧消失),再把全文经由
+      console.print(_framed_render) 落进 scrollback(progressive commit),
+      保证早期行不因 Live 截断而丢失。
+    - 非 tty 路径:退回 raw 行为——text_chunk 直接 console.file.write(chunk) +
+      flush,字符级推送;第一个 chunk 之前打 '⏺ ' 起头,换行后补 '  ' 缩进。
     - tool_notice **延迟** 到 tool_result / tool_diff_result 来时一起打。
-      好处:⏺ 的颜色一开始就是终态(绿/红/DIM),不再需要 ANSI 回去重涂,
-      也省掉了 Live + segments + _recolor_last_tool 一整套机器。
-      代价:工具执行期间 ⏺ 不可见(用户依赖外层 spinner 的转动作为反馈)。
-    - close() 只补 meta 行(elapsed/token/tools),不再有 swap、不再 stop Live。
+      好处:⏺ 的颜色一开始就是终态(绿/红/DIM),不再需要 ANSI 回去重涂。
+      代价:工具执行期间 ⏺ 不可见(用户依赖外层 spinner 作为反馈)。
+    - close() 只补 meta 行(elapsed/token/tools)。
     - 流式期间放弃 inline markdown(**bold** / *italic* / `code`)的渲染:
       跨 chunk 状态机过于脆弱,Claude Code 自己流式也是源码原样上屏。
 
@@ -358,9 +361,9 @@ class StreamingAgentRenderer:
                 pass
             finally:
                 self._live = None
-            if self._text_buf:
-                self.console.print(self._framed_render(self._text_buf))
-            self._text_buf = ""
+            buf, self._text_buf = self._text_buf, ""
+            if buf:
+                self.console.print(self._framed_render(buf))
         elif not self._pending_indent:
             self.console.file.write("\n")
             self.console.file.flush()

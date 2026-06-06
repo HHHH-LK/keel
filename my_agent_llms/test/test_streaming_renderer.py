@@ -56,16 +56,19 @@ def test_tail_cap_floor_is_three():
 
 
 def test_close_commits_full_text_even_when_live_capped():
-    # 终端高度小,活跃段很长 → live 只显尾部,但 close 必须把全文落进 scrollback
     con = Console(file=io.StringIO(), force_terminal=True, width=80, height=8)
     r = chat_view.StreamingAgentRenderer(con)
     long_text = "\n".join(f"row{i}" for i in range(30))
     r.text_chunk(long_text)
+    # 流式期间的 live 帧应被截断(不含早期行)
+    frame_plain = r._active_frame(long_text).plain
+    assert "row0" not in frame_plain, "Live 帧应被尾区截断"
+    # close 后全文必须落进 scrollback,且经由 console.print(_framed_render) 路径
     r._close_text()
     out = con.file.getvalue()
-    # 全文每一行都应出现在最终 scrollback 输出里(含被 live 截掉的早期行)
-    assert "row0" in out
-    assert "row29" in out
+    assert "row0" in out    # 早期行从 scrollback commit 找回
+    assert "row29" in out   # 尾部也在
+    assert "⏺" in out       # _framed_render 前缀,确认走了 console.print 新路径
 
 
 def test_active_frame_is_capped_during_stream():
