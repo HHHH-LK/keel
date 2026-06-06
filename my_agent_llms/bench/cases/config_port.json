@@ -1,0 +1,10 @@
+{
+  "id": "config_port",
+  "task": "在工作区创建 config.json,是一个 JSON 对象,含字段 port,值为整数 8080。",
+  "setup_files": {},
+  "checks": [
+    {"type": "command_ok",
+     "params": {"cmd": "python3 -c \"import json;d=json.load(open('config.json'));assert d['port']==8080\""},
+     "weight": 10, "is_hard_oracle": true}
+  ]
+}

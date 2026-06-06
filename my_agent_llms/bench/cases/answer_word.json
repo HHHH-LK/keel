@@ -1,0 +1,8 @@
+{
+  "id": "answer_word",
+  "task": "用一句话介绍 Python,回答里必须包含'编程语言'这四个字。",
+  "setup_files": {},
+  "checks": [
+    {"type": "string_contains", "params": {"s": "编程语言"}, "weight": 1}
+  ]
+}

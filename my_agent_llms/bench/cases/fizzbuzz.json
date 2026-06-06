@@ -1,0 +1,10 @@
+{
+  "id": "fizzbuzz",
+  "task": "在工作区创建 fizzbuzz.py,实现函数 fizzbuzz(n):能被 15 整除返回 'FizzBuzz',能被 3 整除返回 'Fizz',能被 5 整除返回 'Buzz',否则返回 str(n)。",
+  "setup_files": {},
+  "checks": [
+    {"type": "command_ok",
+     "params": {"cmd": "python3 -c \"from fizzbuzz import fizzbuzz as f; assert f(15)=='FizzBuzz' and f(3)=='Fizz' and f(5)=='Buzz' and f(7)=='7'\""},
+     "weight": 10, "is_hard_oracle": true}
+  ]
+}
