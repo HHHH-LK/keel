@@ -128,20 +128,20 @@ def test_multi_tool_round_pairs_each_result_with_its_notice():
     每个结果必须配对到自己的 ⏺(FIFO),不能互相覆盖丢失。"""
     def run(console):
         r = chat_view.StreamingAgentRenderer(console)
+        # 用 Bash(不在 per-type 摘要表里)→ 结果内容原样保留,才能验证"结果配对到对的 ⏺"
         for f in ("a.py", "b.py", "c.py"):           # Phase A:全部 notice
-            r.tool_notice("ReadFile", f)
+            r.tool_notice("Bash", f)
         for f in ("a.py", "b.py", "c.py"):           # Phase C:全部 result
             r.tool_result(f"✅ {f} ok", elapsed_sec=0.05)
         r.close()
     out = _capture_renderer(run)
     # 三个文件名都得作为独立 ⏺ 头出现(不再只剩最后一个 c.py)
-    assert "ReadFile(a.py)" in out
-    assert "ReadFile(b.py)" in out
-    assert "ReadFile(c.py)" in out
+    assert "Bash(a.py)" in out
+    assert "Bash(b.py)" in out
+    assert "Bash(c.py)" in out
     assert out.count("⏺") == 3
-    # ReadFile results are summarized (P2-2); each produces "Read 1 lines" summary.
-    # The 3 ⏺ headers confirm correct FIFO pairing — one per file.
-    assert out.count("Read 1 lines") == 3
+    # 结果与各自的 ⏺ 配对(内容互异,真正验证 FIFO 不串)
+    assert "a.py ok" in out and "b.py ok" in out and "c.py ok" in out
 
 
 def test_close_flushes_unpaired_notices_as_headers():
