@@ -44,7 +44,7 @@ def _make_agent(monkeypatch, tools, tool_calls_then_done):
         storage_dir=Path(tmpdir), cold_backend="none", vector_backend="memory"))
     agent._run_response_hooks = lambda inp, resp, msgs: resp
     agent._apply_honesty_contract = lambda p: p or ""
-    agent._finalize_turn = lambda inp, resp: None
+    agent._finalize_turn = lambda inp, resp, *, task_turn=False: None
 
     calls = list(tool_calls_then_done)
     captured_messages: List[List[Dict[str, Any]]] = []

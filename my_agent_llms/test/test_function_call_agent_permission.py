@@ -76,7 +76,7 @@ def _make_agent(monkeypatch, tool_calls_then_done):
     # response_hooks / honesty / finalize_turn 全部桩成 no-op,避免测试依赖隐式内部
     agent._run_response_hooks = lambda inp, resp, msgs: resp
     agent._apply_honesty_contract = lambda p: p or ""
-    agent._finalize_turn = lambda inp, resp: None
+    agent._finalize_turn = lambda inp, resp, *, task_turn=False: None
 
     calls = list(tool_calls_then_done)
     captured_messages: List[List[Dict[str, Any]]] = []

@@ -58,7 +58,7 @@ def _make_agent(monkeypatch, responses, *, spec, tools=None, replan_budget=1):
         storage_dir=Path(tempfile.mkdtemp()), cold_backend="none", vector_backend="memory"))
     agent._run_response_hooks = lambda inp, resp, msgs: resp
     agent._apply_honesty_contract = lambda p: p or ""
-    agent._finalize_turn = lambda inp, resp: None
+    agent._finalize_turn = lambda inp, resp, *, task_turn=False: None
 
     agent.enable_verify = True
     from my_agent_llms.verify import CheckerRunner

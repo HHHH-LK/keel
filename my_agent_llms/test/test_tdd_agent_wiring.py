@@ -38,7 +38,7 @@ def test_run_tdd_finalizes_original_task_and_overrides_classify(monkeypatch):
     a.llm = "LLM"
     a.workspace = "WS"
     finalized = []
-    a._finalize_turn = lambda inp, resp: finalized.append((inp, resp))
+    a._finalize_turn = lambda inp, resp, *, task_turn=False: finalized.append((inp, resp))
     captured = {}
 
     def fake_run_tdd(**kw):
