@@ -301,6 +301,7 @@ class MemoryManager:
         *,
         pinned: bool = False,
         metadata: Optional[Dict] = None,
+        task_turn: bool = False,
     ) -> MemoryItem:
         item = MemoryItem(
             content=content,
@@ -309,7 +310,7 @@ class MemoryManager:
             metadata=metadata or {},
         )
         # ★ 种子分: 启发式打分,关键消息一进 L1 就被 pin,不依赖 LLM
-        item.prior_score = evaluate_prior_score(content, role)
+        item.prior_score = evaluate_prior_score(content, role, task_turn=task_turn)
         if not item.pinned and should_auto_pin(item.prior_score):
             item.pinned = True
 
