@@ -17,6 +17,7 @@ from my_agent_llms.core.llm import MyLLM
 from my_agent_llms.core.message import Message
 from my_agent_llms.tools.registry import ToolRegistry
 from my_agent_llms.verify.replan import make_plan
+from my_agent_llms.planning.todo import todo_system_message, TODO_HEADING
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class MyFunctionCallAgent(Agent):
                  workspace=None,
                  enable_verify: bool = False,
                  replan_budget: int = 1,
+                 todo_store=None,
                  spec_generator=None,
                  convergence_judge=None,
                  **kwargs):
@@ -71,6 +73,7 @@ class MyFunctionCallAgent(Agent):
         self._install_memory_tools(self.tool_registry)
         # ── 在线验证-重试(默认关闭,开关隔离,不破坏旧行为)──
         self.replan_budget = replan_budget
+        self.todo_store = todo_store
         self.enable_verify = enable_verify
         if enable_verify:
             from my_agent_llms.verify import (
@@ -115,6 +118,7 @@ class MyFunctionCallAgent(Agent):
         # 注意(Phase 1 已知限制):验证重试轮与工具轮共享 self.max_steps 预算。
         # 工具用得多时验证轮会被挤压,可能到不了 convergence_judge.hard_cap。Phase 2 再拆独立预算。
         for _ in range(self.max_steps):
+            self._refresh_todo_injection(messages)
             t_llm = time.monotonic()
             response = self._invoke_with_tools(
                 messages, tools, tool_choice,
@@ -259,6 +263,18 @@ class MyFunctionCallAgent(Agent):
     def _make_plan(self, task: str, stuck_feedback: str) -> str:
         """卡住时换思路重新规划(薄包装 verify.replan.make_plan,便于测试 monkeypatch)。"""
         return make_plan(self.llm, task, stuck_feedback)
+
+    def _refresh_todo_injection(self, messages):
+        """每轮 invoke 前就地刷新 todo 注入:删上一份、加当前(非空才加)。短任务零开销。"""
+        store = getattr(self, "todo_store", None)
+        if store is None:
+            return
+        messages[:] = [m for m in messages
+                       if not (m.get("role") == "system"
+                               and TODO_HEADING in (m.get("content") or ""))]
+        msg = todo_system_message(store)
+        if msg:
+            messages.append(msg)
 
     def _tool_is_side_effect_free(self, name: str) -> bool:
         """白名单判定:仅 Tool.side_effect_free=True 的才允许并行。

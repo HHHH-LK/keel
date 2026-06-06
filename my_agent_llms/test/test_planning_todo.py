@@ -46,3 +46,60 @@ def test_system_message_present_when_nonempty():
     s = TodoStore(); s.set([{"content": "干活", "status": "pending"}])
     m = todo_system_message(s)
     assert m["role"] == "system" and "干活" in m["content"]
+
+
+# ── 端到端:每轮注入 ───────────────────────────────────────────
+from types import SimpleNamespace
+from typing import Any, Dict, List
+
+
+def _text_response(text):
+    msg = SimpleNamespace(content=text, tool_calls=None, reasoning_content=None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")], usage=None)
+
+
+def _make_agent(monkeypatch, responses, *, todo_store):
+    from my_agent_llms.agents.function_call_agent import MyFunctionCallAgent
+    from my_agent_llms.tools.registry import ToolRegistry
+    from my_agent_llms.core.llm import MyLLM
+    from my_agent_llms.memory import MemoryManager, MemoryConfig
+    from pathlib import Path
+    import tempfile
+    llm = MyLLM.__new__(MyLLM)
+    llm.provider = "openai"; llm.model = "stub"; llm.client = SimpleNamespace()
+    llm.temperature = 0; llm.max_tokens = 100
+    agent = MyFunctionCallAgent.__new__(MyFunctionCallAgent)
+    agent.name = "t"; agent.llm = llm; agent.tool_registry = ToolRegistry()
+    agent.max_steps = 5; agent.last_tool_call_count = 0
+    agent.system_prompt = ""; agent.config = None; agent.tool_timeout = None
+    agent.workspace = None; agent.enable_verify = False
+    agent.spec_generator = None; agent.checker_runner = None; agent.convergence_judge = None
+    agent.todo_store = todo_store
+    agent.memory = MemoryManager(MemoryConfig(
+        storage_dir=Path(tempfile.mkdtemp()), cold_backend="none", vector_backend="memory"))
+    agent._run_response_hooks = lambda inp, resp, msgs: resp
+    agent._apply_honesty_contract = lambda p: p or ""
+    agent._finalize_turn = lambda inp, resp: None
+    calls = list(responses)
+    captured: List[List[Dict[str, Any]]] = []
+
+    def fake_invoke(messages, tools, tool_choice, on_text_chunk=None, **kw):
+        captured.append([dict(m) for m in messages])
+        return calls.pop(0)
+
+    monkeypatch.setattr(agent, "_invoke_with_tools", fake_invoke)
+    agent._captured = captured
+    return agent
+
+
+def test_nonempty_todo_injected_each_turn(monkeypatch):
+    s = TodoStore(); s.set([{"content": "干活", "status": "pending"}])
+    agent = _make_agent(monkeypatch, [_text_response("done")], todo_store=s)
+    agent.run("t")
+    assert any(TODO_HEADING in m.get("content", "") for m in agent._captured[0])
+
+
+def test_empty_todo_not_injected(monkeypatch):
+    agent = _make_agent(monkeypatch, [_text_response("done")], todo_store=TodoStore())
+    agent.run("t")
+    assert not any(TODO_HEADING in m.get("content", "") for m in agent._captured[0])
