@@ -133,7 +133,8 @@ class MyFunctionCallAgent(Agent):
 
             if not tool_calls:
                 candidate = self._extract_message_content(message)
-                if not getattr(self, "enable_verify", False):
+                # 工具门控:本轮没用过工具(闲聊/纯问答)→ 跳过验证,零开销返回首答。
+                if not getattr(self, "enable_verify", False) or tool_call_count == 0:
                     final_response = candidate
                     break
                 # ── 验证-重试 gate(硬插入,不靠模型自觉)──

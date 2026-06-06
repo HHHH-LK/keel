@@ -14,7 +14,39 @@ def _text_response(text):
                            usage=None)
 
 
-def _make_agent(monkeypatch, responses, *, enable_verify, spec):
+from my_agent_llms.tools.base import Tool, ToolParameter
+
+
+class _StubTool(Tool):
+    """最小工具:可选地把 write_content 写进 write_path;side_effect_free 可配。"""
+
+    def __init__(self, name="noop", write_path=None, write_content="",
+                 side_effect_free=True):
+        super().__init__(name, "stub tool")
+        self.side_effect_free = side_effect_free
+        self._write_path = write_path
+        self._write_content = write_content
+
+    def run(self, parameters):
+        if self._write_path is not None:
+            from pathlib import Path
+            Path(self._write_path).write_text(self._write_content, encoding="utf-8")
+        return f"{self.name}-ok"
+
+    def get_parameters(self):
+        return []
+
+
+def _tool_call_response(name="noop", args="{}", tc_id="call_1"):
+    tc = SimpleNamespace(id=tc_id, type="function",
+                         function=SimpleNamespace(name=name, arguments=args))
+    msg = SimpleNamespace(content="", tool_calls=[tc], reasoning_content=None)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=msg, finish_reason="tool_calls")],
+        usage=None)
+
+
+def _make_agent(monkeypatch, responses, *, enable_verify, spec, tools=None, workspace=None):
     from my_agent_llms.core.llm import MyLLM
     llm = MyLLM.__new__(MyLLM)
     llm.provider = "openai"
@@ -27,11 +59,14 @@ def _make_agent(monkeypatch, responses, *, enable_verify, spec):
     agent.name = "test"
     agent.llm = llm
     agent.tool_registry = ToolRegistry()
+    for t in (tools or []):
+        agent.tool_registry.register_tool(t)
     agent.max_steps = 5
     agent.last_tool_call_count = 0
     agent.system_prompt = ""
     agent.config = None
     agent.tool_timeout = None
+    agent.workspace = workspace
     from my_agent_llms.memory import MemoryManager, MemoryConfig
     from pathlib import Path
     import tempfile
@@ -77,12 +112,13 @@ def test_verify_retries_until_pass(monkeypatch):
     spec = CheckSpec(task="t", checks=[Check(id="a", type="string_contains", params={"s": "结论"})])
     agent = _make_agent(
         monkeypatch,
-        [_text_response("还在想"), _text_response("最终结论给出")],
-        enable_verify=True, spec=spec)
+        [_tool_call_response("noop"),
+         _text_response("还在想"), _text_response("最终结论给出")],
+        enable_verify=True, spec=spec, tools=[_StubTool("noop")])
     out = agent.run("t")
-    assert out == "最终结论给出"        # 第一答缺"结论"→反馈喂回→第二答补上
-    # 第二次 LLM 调用应看到注入的 user feedback
-    feedback_msgs = [m for m in agent._captured[1]
+    assert out == "最终结论给出"        # 用过工具 → 验证生效;第一答缺"结论"→反馈喂回→第二答补上
+    # 注入的 user feedback 应出现在最后一次 LLM 调用看到的 messages 里
+    feedback_msgs = [m for m in agent._captured[-1]
                      if m.get("role") == "user" and "验收项" in m.get("content", "")]
     assert feedback_msgs
 
@@ -92,31 +128,32 @@ def test_verify_returns_best_on_max_steps(monkeypatch):
         Check(id="a", type="string_contains", params={"s": "X"}),
         Check(id="b", type="string_contains", params={"s": "Y"}),
     ])
-    # 三答都不全过;第 2 答 res 最低(含 X) → 返回 best
+    # 前置工具调用触发门控;之后三答都不全过,第 2 答残差最低(含 X) → 返回 best
     agent = _make_agent(
         monkeypatch,
-        [_text_response("none"), _text_response("has X"), _text_response("none2"),
-         _text_response("none3"), _text_response("none4")],
-        enable_verify=True, spec=spec)
+        [_tool_call_response("noop"),
+         _text_response("none"), _text_response("has X"),
+         _text_response("none2"), _text_response("none3")],
+        enable_verify=True, spec=spec, tools=[_StubTool("noop")])
     out = agent.run("t")
     assert out == "has X"
 
 
 def test_verify_returns_best_when_max_steps_exhausted_without_verdict(monkeypatch):
-    # max_steps=2 < hard_cap=5, K=99 → 两轮都判 CONTINUE,主循环耗尽 → 必须返回 best,
-    # 不能再做无验证兜底调用。
+    # 前置工具调用 + 一答;max_steps=2 < hard_cap=5, K=99 → 验证轮判 CONTINUE,主循环耗尽,
+    # 必须返回 best,不能再做无验证兜底调用。
     spec = CheckSpec(task="t", checks=[
         Check(id="a", type="string_contains", params={"s": "X"}),
         Check(id="b", type="string_contains", params={"s": "Y"}),
     ])
     agent = _make_agent(
         monkeypatch,
-        [_text_response("none"), _text_response("has X")],  # 只给两条:若触发兜底第三次调用会 IndexError
-        enable_verify=True, spec=spec)
+        [_tool_call_response("noop"), _text_response("has X")],  # 只给两条:触发兜底第三次调用会 IndexError
+        enable_verify=True, spec=spec, tools=[_StubTool("noop")])
     agent.max_steps = 2
     agent.convergence_judge = ConvergenceJudge(hard_cap=5, K=99)
     out = agent.run("t")
-    assert out == "has X"                 # 轮2 含 X,残差最低 → best
+    assert out == "has X"                 # 唯一验证过的候选 → best
     assert len(agent._captured) == 2      # 没有第三次(兜底)LLM 调用
 
 
@@ -144,3 +181,23 @@ def test_agent_stores_workspace():
             cold_backend="none", vector_backend="memory"))
     assert agent.workspace is ws
     assert agent.enable_verify is False
+
+
+def test_verify_skipped_when_no_tool_used(monkeypatch):
+    """enable_verify=True 但本轮没调用工具 → 工具门控:跳过验证,首答原样返回,
+    且 SpecGenerator 不被调用(零开销)。"""
+    called = {"gen": False}
+
+    def _gen(task, *, tools):
+        called["gen"] = True
+        return CheckSpec(task=task,
+                         checks=[Check(id="a", type="string_contains", params={"s": "结论"})])
+
+    spec = CheckSpec(task="t",
+                     checks=[Check(id="a", type="string_contains", params={"s": "结论"})])
+    agent = _make_agent(monkeypatch, [_text_response("纯闲聊没有那个词")],
+                        enable_verify=True, spec=spec)
+    agent.spec_generator = SimpleNamespace(generate=_gen)
+    out = agent.run("t")
+    assert out == "纯闲聊没有那个词"   # 没用工具 → 不验证,首答原样返回
+    assert called["gen"] is False     # SpecGenerator 未被调用
