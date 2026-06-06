@@ -48,6 +48,9 @@ class MyFunctionCallAgent(Agent):
                  config: Optional[Config] = None,
                  max_steps: int = 5,
                  tool_timeout: Optional[float] = None,
+                 enable_verify: bool = False,
+                 spec_generator=None,
+                 convergence_judge=None,
                  **kwargs):
         super().__init__(name, llm, system_prompt, config, **kwargs)
         if llm.provider not in MyLLM.OPENAI_COMPATIBLE_PROVIDERS:
@@ -61,6 +64,18 @@ class MyFunctionCallAgent(Agent):
         self.tool_timeout = tool_timeout
         self.last_tool_call_count = 0  # chat 层读取用作 meta
         self._install_memory_tools(self.tool_registry)
+        # ── 在线验证-重试(默认关闭,开关隔离,不破坏旧行为)──
+        self.enable_verify = enable_verify
+        if enable_verify:
+            from my_agent_llms.verify import (
+                SpecGenerator, CheckerRunner, ConvergenceJudge)
+            self.spec_generator = spec_generator or SpecGenerator(llm)
+            self.convergence_judge = convergence_judge or ConvergenceJudge()
+            self.checker_runner = CheckerRunner(llm=llm)
+        else:
+            self.spec_generator = None
+            self.convergence_judge = None
+            self.checker_runner = None
 
     def run(self,
             input_text: str,
@@ -84,6 +99,11 @@ class MyFunctionCallAgent(Agent):
         tool_call_count = 0
 
         final_response = ""
+        # 验证-重试 gate 的循环外状态(spec 首次进 gate 时惰性生成一次,之后不变)
+        _verify_spec = None
+        _verify_round = 0
+        _verify_history: list = []
+        _verify_best = None
         for _ in range(self.max_steps):
             t_llm = time.monotonic()
             response = self._invoke_with_tools(
@@ -107,8 +127,24 @@ class MyFunctionCallAgent(Agent):
             tool_calls = getattr(message, "tool_calls", None)
 
             if not tool_calls:
-                final_response = self._extract_message_content(message)
-                break
+                candidate = self._extract_message_content(message)
+                if not getattr(self, "enable_verify", False):
+                    final_response = candidate
+                    break
+                # ── 验证-重试 gate(硬插入,不靠模型自觉)──
+                if _verify_spec is None:
+                    _verify_spec = self.spec_generator.generate(
+                        input_text, tools=self.tool_registry.list_tools())
+                gate = self._verify_gate(
+                    candidate, messages, _verify_spec,
+                    _verify_round, _verify_history, _verify_best)
+                _verify_best = gate["best"]
+                _verify_round += 1
+                if gate["stop"]:
+                    final_response = gate["best"].result
+                    break
+                messages.append({"role": "system", "content": gate["feedback"]})
+                continue
 
             messages.append({
                 "role": "assistant",
@@ -171,6 +207,26 @@ class MyFunctionCallAgent(Agent):
         self.last_tool_call_count = tool_call_count
         logger.debug(f"{self.name} 响应完成")
         return final_response
+
+    def _verify_gate(self, candidate, messages, spec, round_idx, history, best):
+        """对候选答案跑一轮验证,更新 best/history,返回是否止损 + 反馈文案。"""
+        from my_agent_llms.verify import CheckContext, residual, fingerprint, Verdict
+        from my_agent_llms.verify.loop import feedback_from
+        from my_agent_llms.verify.convergence import Round
+
+        ctx = CheckContext(
+            result=candidate, trajectory=messages,
+            workspace=getattr(self, "workspace", None))
+        passed = self.checker_runner.run(spec, ctx)
+        res = residual(spec, passed)
+        if best is None or res < best.residual:   # 严格小于 → 平局保留更早那轮
+            best = SimpleNamespace(residual=res, result=candidate, passed=passed)
+        fp = fingerprint(candidate, messages)
+        verdict = self.convergence_judge.judge(round_idx, res, fp, history)
+        history.append(Round(residual=res, fingerprint=fp))
+        stop = verdict != Verdict.CONTINUE
+        return {"best": best, "stop": stop,
+                "feedback": feedback_from(spec, passed) or "请继续完善答案。"}
 
     def _tool_is_side_effect_free(self, name: str) -> bool:
         """白名单判定:仅 Tool.side_effect_free=True 的才允许并行。
