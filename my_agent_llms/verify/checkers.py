@@ -29,6 +29,8 @@ class CheckContext:
 def _iter_tool_calls(trajectory: List[Dict[str, Any]]) -> Iterator[Dict[str, Any]]:
     """遍历轨迹里所有 assistant 发起的 tool_calls。"""
     for msg in trajectory:
+        if not isinstance(msg, dict):
+            continue
         if msg.get("role") != "assistant":
             continue
         for tc in msg.get("tool_calls") or []:
@@ -51,9 +53,14 @@ def check_one(check: Check, ctx: CheckContext, *, llm=None) -> bool:
                 return False
             path = ctx.workspace.resolve_read(p["path"])
             obj = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(obj, dict):
+                logger.warning("field_equals: %s 解析出的根不是 JSON 对象,视为未通过", p["path"])
+                return False
             return obj.get(p["key"]) == p["value"]
         if t == "command_ok":
             cwd = getattr(ctx.workspace, "root", None) if ctx.workspace else None
+            # 注意:cmd 来自 LLM 生成的 spec,shell=True 存在注入风险。
+            # 这是 hard-oracle 跑真实检查命令的有意取舍;workspace.root 限定 cwd 但不限定命令本身。
             proc = subprocess.run(
                 p["cmd"], shell=True, cwd=str(cwd) if cwd else None,
                 capture_output=True, timeout=p.get("timeout", 30),

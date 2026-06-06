@@ -92,6 +92,14 @@ def test_exception_in_check_is_false():
     assert check_one(c, _ctx(result="anything")) is False
 
 
+def test_field_equals_non_dict_json_is_false(tmp_path):
+    from my_agent_llms.workspace.workspace import Workspace
+    (tmp_path / "arr.json").write_text("[1, 2, 3]", encoding="utf-8")
+    ws = Workspace(root=tmp_path)
+    c = Check(id="c", type="field_equals", params={"path": "arr.json", "key": "k", "value": "v"})
+    assert check_one(c, _ctx(workspace=ws)) is False
+
+
 def test_checker_runner_returns_all_ids():
     spec = CheckSpec(task="t", checks=[
         Check(id="a", type="string_contains", params={"s": "x"}),
