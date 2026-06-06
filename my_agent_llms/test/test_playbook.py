@@ -353,6 +353,16 @@ def test_l0_persists_across_manager_restart():
         assert any("张三" in c for c in contents)
 
 
+def test_classify_task_directive_not_hard_constraint():
+    # 通用祈使词但非自指 → 不再判 hard_constraint
+    assert classify_content_type("回答里必须包含编程语言") != L0Type.HARD_CONSTRAINT
+    assert classify_content_type("文件必须包含字段 status") != L0Type.HARD_CONSTRAINT
+    # 自指 + 祈使 → 仍是 hard_constraint
+    assert classify_content_type("我必须每天吃药") == L0Type.HARD_CONSTRAINT
+    # 用户事实词 → 仍是 hard_constraint
+    assert classify_content_type("不能吃海鲜") == L0Type.HARD_CONSTRAINT
+
+
 if __name__ == "__main__":
     funcs = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     passed = 0

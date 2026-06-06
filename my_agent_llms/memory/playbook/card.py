@@ -135,12 +135,16 @@ class PlaybookCard(BaseModel):
 def classify_content_type(content: str) -> L0Type:
     """启发式分类消息内容属于哪类 L0 卡片。
 
-    复用 seed_score 的关键词清单,按优先级:
+    复用 seed_score 的判定与关键词清单,按优先级:
     hard_constraint > identity > preference > state(默认)
+    hard_constraint 用 is_hard_constraint_content(用户事实词 / 自指+祈使),
+    与 evaluate_prior_score 保持一致,避免两处漂移。
     """
-    from my_agent_llms.memory.seed_score import CATEGORY_KEYWORDS
+    from my_agent_llms.memory.seed_score import (
+        CATEGORY_KEYWORDS, is_hard_constraint_content,
+    )
 
-    if any(kw in content for kw in CATEGORY_KEYWORDS["hard_constraint"]["keywords"]):
+    if is_hard_constraint_content(content):
         return L0Type.HARD_CONSTRAINT
     if any(kw in content for kw in CATEGORY_KEYWORDS["identity"]["keywords"]):
         return L0Type.IDENTITY
