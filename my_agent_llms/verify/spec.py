@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -29,7 +30,86 @@ class CheckSpec:
     checks: List[Check] = field(default_factory=list)
 
 
+_SPEC_PROMPT = """你是验收规格生成器,**不是任务执行者**。
+给定一个任务,你只产出"答案必须满足的性质/约束",绝不产出具体答案。
+
+优先级(尽量用靠前的):
+1. command_ok    —— 跑命令看 exit code(可执行真 oracle),params={{"cmd": "..."}}
+2. field_equals  —— 解析产物文件取键比对,params={{"path","key","value"}}
+3. tool_called   —— 任务要求必须用过某工具,params={{"tool": "..."}}
+4. string_contains / string_absent —— 产出必须含/不含某串,params={{"s": "..."}}
+5. judge         —— 实在无法客观核对时的兜底,params={{"rubric": "..."}}
+
+可用工具: {tools}
+
+只输出一个 JSON 对象,形如:
+{{"checks": [
+  {{"id": "c1", "type": "string_contains", "params": {{"s": "..."}},
+   "weight": 1.0, "confidence": 0.8, "is_hard_oracle": false}}
+]}}
+hard oracle(command_ok/field_equals/tool_called)请置 is_hard_oracle=true 且 weight 给高(如 10);
+推导性质(string_*/judge)按你的把握给 confidence(0~1)。
+
+任务:
+{task}
+"""
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    """从 LLM 回复里抽出第一个 JSON 对象。容忍 ```json fenced``` 包裹。"""
+    if not text:
+        return None
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _hard_oracle_fallback(task: str) -> "CheckSpec":
+    """SpecGenerator 失败时的兜底:只跑 hard oracle,宁缺毋错。"""
+    return CheckSpec(task=task, checks=[
+        Check(id="no_traceback", type="string_absent",
+              params={"s": "Traceback"}, weight=10.0, is_hard_oracle=True),
+    ])
+
+
 class SpecGenerator:
-    """Placeholder — full implementation lands in Task 5."""
+    """独立 LLM 调用,从任务 T 推导 CheckSpec。只产性质,不产答案。"""
+
     def __init__(self, llm):
         self.llm = llm
+
+    def generate(self, task: str, *, tools: List[str]) -> "CheckSpec":
+        try:
+            prompt = _SPEC_PROMPT.format(task=task, tools=", ".join(tools) or "(无)")
+            reply = self.llm.invoke([{"role": "system", "content": prompt}])
+        except Exception:
+            logger.exception("SpecGenerator LLM 调用失败,退化为 hard-oracle-only")
+            return _hard_oracle_fallback(task)
+
+        obj = _extract_json(reply)
+        raw_checks = (obj or {}).get("checks") if isinstance(obj, dict) else None
+        if not raw_checks:
+            logger.warning("SpecGenerator 解析失败/产出空,退化为 hard-oracle-only")
+            return _hard_oracle_fallback(task)
+
+        checks: List[Check] = []
+        for i, rc in enumerate(raw_checks):
+            try:
+                checks.append(Check(
+                    id=str(rc.get("id") or f"c{i}"),
+                    type=str(rc["type"]),
+                    params=dict(rc.get("params") or {}),
+                    weight=float(rc.get("weight", 1.0)),
+                    confidence=float(rc.get("confidence", 1.0)),
+                    is_hard_oracle=bool(rc.get("is_hard_oracle", False)),
+                ))
+            except Exception:
+                logger.warning("跳过非法 check 定义: %r", rc)
+        if not checks:
+            return _hard_oracle_fallback(task)
+        return CheckSpec(task=task, checks=checks)
