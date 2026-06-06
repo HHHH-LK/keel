@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Protocol, Tuple
 
 from my_agent_llms.verify.checkers import CheckContext, CheckerRunner
 from my_agent_llms.verify.convergence import ConvergenceJudge, Round, Verdict, fingerprint
-from my_agent_llms.verify.residual import residual
+from my_agent_llms.verify.residual import residual, effective_count
 from my_agent_llms.verify.spec import CheckSpec, SpecGenerator
 
 
@@ -38,7 +38,7 @@ class _Best:
 
 def feedback_from(spec: CheckSpec, passed: Dict[str, bool]) -> Optional[str]:
     """取没过的 checks 的人话描述,组成 grounded 反思素材。全过返回 None。"""
-    failed = [c for c in spec.checks if not passed.get(c.id, False)]
+    failed = [c for c in spec.checks if passed.get(c.id, False) is False]
     if not failed:
         return None
     lines = ["上一轮产出未通过以下验收项,请针对性修订(不要推倒重来,只补差距):"]
@@ -89,7 +89,8 @@ class VerifyRetryLoop:
             if best is None or res < best.residual:   # 严格小于 → 平局保留更早
                 best = _Best(residual=res, result=result, passed=passed)
             fp = fingerprint(result, traj)
-            verdict = self.judge.judge(r, res, fp, history)
+            verdict = self.judge.judge(r, res, fp, history,
+                                       has_effective=effective_count(spec, passed) > 0)
             history.append(Round(residual=res, fingerprint=fp))
             if verdict != Verdict.CONTINUE:
                 # verdict = 为什么停;best = 返回哪一轮(全程残差最小那轮,防越修越差)

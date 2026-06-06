@@ -16,6 +16,12 @@ from my_agent_llms.verify.spec import Check, CheckSpec
 
 logger = logging.getLogger(__name__)
 
+# 命令自身坏了(不是 agent 失败)的 stderr 标志:这类 check 判 SKIP(None),不计入残差。
+_BROKEN_ORACLE_MARKERS = (
+    "SyntaxError", "IndentationError", "NameError",
+    "ModuleNotFoundError", "ImportError", "command not found",
+)
+
 
 @dataclass
 class CheckContext:
@@ -39,8 +45,8 @@ def _iter_tool_calls(trajectory: List[Dict[str, Any]]) -> Iterator[Dict[str, Any
                 yield fn
 
 
-def check_one(check: Check, ctx: CheckContext, *, llm=None) -> bool:
-    """按类型分发核对。任何异常 → False(未通过)。"""
+def check_one(check: Check, ctx: CheckContext, *, llm=None) -> Optional[bool]:
+    """按类型分发核对。True=过 / False=未过 / None=SKIP(坏 oracle)。任何异常 → False。"""
     try:
         t = check.type
         p = check.params
@@ -65,7 +71,16 @@ def check_one(check: Check, ctx: CheckContext, *, llm=None) -> bool:
                 p["cmd"], shell=True, cwd=str(cwd) if cwd else None,
                 capture_output=True, timeout=p.get("timeout", 30),
             )
-            return proc.returncode == 0
+            if proc.returncode == 0:
+                return True
+            # 区分"命令自身坏了"(SKIP)vs"断言失败"(真未过)。坏 oracle 不该罚 agent。
+            stderr = (proc.stderr or b"").decode("utf-8", "replace")
+            if any(m in stderr for m in _BROKEN_ORACLE_MARKERS):
+                last = stderr.strip().splitlines()[-1] if stderr.strip() else ""
+                logger.warning("command_ok 检查命令自身坏了(SKIP,不计入残差): %s | %s",
+                               p["cmd"][:80], last)
+                return None
+            return False
         if t == "tool_called":
             want = p["tool"]
             return any(fn.get("name") == want for fn in _iter_tool_calls(ctx.trajectory))
@@ -100,10 +115,11 @@ def _llm_judge(llm, rubric: str, ctx: CheckContext) -> bool:
 
 
 class CheckerRunner:
-    """用 checks[] 逐条核对 ctx,返回 {check_id -> bool}。保证每个 id 都有键。"""
+    """用 checks[] 逐条核对 ctx,返回 {check_id -> True|False|None}。
+    None = SKIP(坏 oracle,如命令自身 SyntaxError),不计入残差。保证每个 id 都有键。"""
 
     def __init__(self, *, llm=None):
         self.llm = llm
 
-    def run(self, spec: CheckSpec, ctx: CheckContext) -> Dict[str, bool]:
+    def run(self, spec: CheckSpec, ctx: CheckContext) -> Dict[str, Optional[bool]]:
         return {c.id: check_one(c, ctx, llm=self.llm) for c in spec.checks}

@@ -222,6 +222,7 @@ class MyFunctionCallAgent(Agent):
     def _verify_gate(self, candidate, messages, spec, round_idx, history, best):
         """对候选答案跑一轮验证,更新 best/history,返回是否止损 + 反馈文案。"""
         from my_agent_llms.verify import CheckContext, residual, fingerprint, Verdict
+        from my_agent_llms.verify.residual import effective_count
         from my_agent_llms.verify.loop import feedback_from
         from my_agent_llms.verify.convergence import Round
 
@@ -233,7 +234,9 @@ class MyFunctionCallAgent(Agent):
         if best is None or res < best.residual:   # 严格小于 → 平局保留更早那轮
             best = SimpleNamespace(residual=res, result=candidate, passed=passed)
         fp = fingerprint(candidate, messages)
-        verdict = self.convergence_judge.judge(round_idx, res, fp, history)
+        verdict = self.convergence_judge.judge(
+            round_idx, res, fp, history,
+            has_effective=effective_count(spec, passed) > 0)
         history.append(Round(residual=res, fingerprint=fp))
         stop = verdict != Verdict.CONTINUE
         return {"best": best, "stop": stop,

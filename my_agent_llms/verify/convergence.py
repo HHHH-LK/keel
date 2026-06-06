@@ -47,9 +47,9 @@ class ConvergenceJudge:
         self.eps = eps
 
     def judge(self, round_idx: int, residual: float, fp: str,
-              history: List[Round]) -> Verdict:
-        # 1. 残差归零 → 收敛(优先级最高)
-        if residual <= self.eps:
+              history: List[Round], has_effective: bool = True) -> Verdict:
+        # 1. 残差归零 → 收敛(优先级最高);但全 SKIP(无有效 check)的"空验证"不算收敛
+        if has_effective and residual <= self.eps:
             return Verdict.CONVERGED
         # 2. 指纹重现 → 震荡(A→B→A 来回改)
         if any(h.fingerprint == fp for h in history):

@@ -40,6 +40,10 @@ _SPEC_PROMPT = """你是验收规格生成器,**不是任务执行者**。
 4. string_contains / string_absent —— 产出必须含/不含某串,params={{"s": "..."}}
 5. judge         —— 实在无法客观核对时的兜底,params={{"rubric": "..."}}
 
+command_ok 命令必须单行可执行;若用 python3 -c,**只能写单个表达式或分号连接的简单语句,
+禁止 for/if/while 等复合语句**(单行 `; for` 是 SyntaxError)。需要遍历校验时改用单表达式,如:
+python3 -c "import json;d=json.load(open('f.json'));assert all(x['k'].startswith('v') for x in d['items'])"
+
 可用工具: {tools}
 
 只输出一个 JSON 对象,形如:
