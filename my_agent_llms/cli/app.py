@@ -884,6 +884,8 @@ class ChatCLI:
         start = time.monotonic()
         # 用 slot 装 renderer 让 callback 可以重置它
         renderer_slot = {"current": chat_view.StreamingAgentRenderer(console)}
+        # 装 EscListener 引用,让审批回调能在独占 stdin 的审批框前暂停 esc 监听
+        esc_box: Dict[str, Optional["EscListener"]] = {"esc": None}
 
         # scroll-safe spinner(只动当前行,不做 cursor-up):审批后 / 工具完成后
         # 可随时停/起,让"按 y 立刻看到转圈"。它自己记 active 状态,所以
@@ -923,11 +925,19 @@ class ChatCLI:
             pending = cur.pop_last_tool_notice()
             if cur.has_output:
                 cur.close()
+            # 审批框(prompt_toolkit)独占 stdin —— 先暂停 esc 监听,否则两个 reader
+            # 抢同一 fd,审批按键可能被监听线程吃掉导致审批框卡死。
+            esc = esc_box["esc"]
+            if esc is not None:
+                esc.pause()
             try:
                 ok = decide(self.grants, prompt_permission, name, args, preview)
             except TerminalNotInteractiveError:
                 console.print("[yellow]⚠ 非交互终端,自动拒绝[/yellow]")
                 ok = False
+            finally:
+                if esc is not None:
+                    esc.resume()
             # 重置 renderer 让后续 chunk 进新 region
             renderer_slot["current"] = chat_view.StreamingAgentRenderer(console)
             tool_name, tool_preview = (pending if pending
@@ -983,6 +993,7 @@ class ChatCLI:
         cancelled = False
         try:
             with EscListener() as _esc:
+                esc_box["esc"] = _esc
                 response = self.agent.run(
                     user_input,
                     on_text_chunk=_on_chunk,
@@ -993,7 +1004,6 @@ class ChatCLI:
                     on_reasoning_chunk=_on_reasoning,
                     should_cancel=lambda: _esc.cancelled,
                 )
-                cancelled = _esc.cancelled
         except Exception as exc:
             _stop_status()
             cur = renderer_slot["current"]
@@ -1002,6 +1012,10 @@ class ChatCLI:
             chat_view.render_agent_error(console, str(exc))
             return
         finally:
+            # 即使 run 抛异常也捕获取消态(Issue 1);并清掉 holder
+            _esc_ref = esc_box["esc"]
+            cancelled = bool(_esc_ref and _esc_ref.cancelled)
+            esc_box["esc"] = None
             _stop_status()
 
         elapsed = time.monotonic() - start
