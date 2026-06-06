@@ -2,8 +2,10 @@
 from my_agent_llms.memory.seed_score import (
     AUTO_PIN_THRESHOLD,
     KG_FEEDBACK_BOOST,
+    TASK_TURN_PENALTY,
     boost_with_kg_feedback,
     evaluate_prior_score,
+    is_hard_constraint_content,
     should_auto_pin,
 )
 
@@ -180,11 +182,6 @@ def test_realistic_scenarios():
         )
 
 
-from my_agent_llms.memory.seed_score import (
-    DIRECTIVE_PENALTY, TASK_TURN_PENALTY, is_hard_constraint_content,
-)
-
-
 def test_user_fact_is_hard_constraint():
     assert is_hard_constraint_content("我对花生过敏")
     assert is_hard_constraint_content("不能吃海鲜")          # 用户事实词,无需自指
@@ -207,14 +204,15 @@ def test_task_turn_penalty_applied():
     assert abs((base - penalized) - abs(TASK_TURN_PENALTY)) < 1e-9
 
 
-def test_directive_penalty_applied():
-    with_dir = evaluate_prior_score("我必须更新这个文件")     # 自指 hard_constraint + 文件(directive)
-    no_dir = evaluate_prior_score("我必须早睡")               # 自指 hard_constraint,无 directive
-    assert abs((no_dir - with_dir) - abs(DIRECTIVE_PENALTY)) < 1e-9
+def test_directive_nouns_do_not_suppress_self_description():
+    # 含产物名词但是用户自述 → 不被压低
+    assert evaluate_prior_score("我喜欢生成艺术") >= 0.30   # preference 保住
+    assert evaluate_prior_score("我是文件管理员") >= 0.40   # identity 保住
 
 
-def test_real_user_constraint_still_promotable():
-    assert evaluate_prior_score("我对花生过敏") >= 0.5
+def test_self_intro_compound_not_hard_constraint():
+    # "自我介绍必须简洁" 里的"自我"不是自指 → 不算 hard_constraint
+    assert not is_hard_constraint_content("自我介绍必须简洁")
 
 
 if __name__ == "__main__":

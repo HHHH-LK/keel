@@ -11,7 +11,7 @@
 - KG 反哺 = detector 抽出事实/检测冲突时累加 KG_FEEDBACK_BOOST
 - 最终 prior_score = clamp(种子分 + KG 反哺, 0, 1)
 """
-from typing import Dict, List
+from typing import Dict
 
 
 # ─────────────────────────────────────────────────────────
@@ -26,10 +26,6 @@ USER_FACT_KEYWORDS = ["过敏", "不能吃", "不能喝"]
 GENERIC_IMPERATIVE_KEYWORDS = ["必须", "千万不要", "严禁", "忌讳", "禁忌", "不可以", "绝对不"]
 # 自指标记:表明"在说用户自己"
 SELF_REF_KEYWORDS = ["我", "咱", "俺", "本人"]
-# 产物/动作指令词:命中说明这是对助手/产物的祈使(任务指令)→ 扣分
-DIRECTIVE_KEYWORDS = ["回答", "输出", "结果", "文件", "创建", "生成",
-                      "写一个", "写个", "列出", "用一句话", "请"]
-
 # 其余三档维持"自指(我…)"原则
 CATEGORY_KEYWORDS: Dict[str, Dict] = {
     "identity": {
@@ -69,8 +65,10 @@ def is_hard_constraint_content(content: str) -> bool:
     """是否构成 hard_constraint:用户事实词直接算;通用祈使词仅在自指时算。"""
     if any(kw in content for kw in USER_FACT_KEYWORDS):
         return True
+    # "自我"(自我介绍/自我管理…)里的"我"不是对用户本人的自指,先剔除再判
+    self_ref_scope = content.replace("自我", "")
     if any(kw in content for kw in GENERIC_IMPERATIVE_KEYWORDS) and \
-            any(kw in content for kw in SELF_REF_KEYWORDS):
+            any(kw in self_ref_scope for kw in SELF_REF_KEYWORDS):
         return True
     return False
 
@@ -82,7 +80,6 @@ SHORT_MESSAGE_THRESHOLD = 10
 SHORT_MESSAGE_PENALTY = -0.20
 QUESTION_PENALTY = -0.15
 ASSISTANT_ROLE_PENALTY = -0.10
-DIRECTIVE_PENALTY = -0.40        # 命中产物/动作指令词(任务指令)
 TASK_TURN_PENALTY = -0.25        # 本轮调用过工具(任务轮)
 
 
@@ -101,7 +98,7 @@ def evaluate_prior_score(content: str, role: str = "user", *,
     """根据消息内容打种子分。
 
     Step 1: 主分 = max(hard_constraint 判定, 其余档命中的最高 score)
-    Step 2: 调整分(可累加):短消息/问句/assistant 自述/产物指令词/任务轮
+    Step 2: 调整分(可累加):短消息/问句/assistant 自述/任务轮
     Step 3: clamp 到 [0, 1]
     """
     if not content:
@@ -126,8 +123,6 @@ def evaluate_prior_score(content: str, role: str = "user", *,
         adj += QUESTION_PENALTY
     if role == "assistant":
         adj += ASSISTANT_ROLE_PENALTY
-    if any(kw in content for kw in DIRECTIVE_KEYWORDS):
-        adj += DIRECTIVE_PENALTY
     if task_turn:
         adj += TASK_TURN_PENALTY
 
