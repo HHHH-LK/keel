@@ -31,3 +31,25 @@ def test_framed_render_has_dot_prefix():
     r = chat_view.StreamingAgentRenderer(con)
     framed = r._framed_render("你好")
     assert "⏺" in framed.plain and "你好" in framed.plain
+
+
+from rich.text import Text
+
+
+def test_tail_cap_keeps_only_last_lines():
+    t = Text("\n".join(f"line{i}" for i in range(20)))   # 20 行
+    capped = chat_view._tail_cap(t, height=10)            # cap = max(3, 10-6) = 4
+    lines = capped.plain.split("\n")
+    assert lines == ["line16", "line17", "line18", "line19"]
+
+
+def test_tail_cap_short_text_unchanged():
+    t = Text("a\nb\nc")
+    capped = chat_view._tail_cap(t, height=24)            # cap = 18 > 3 行
+    assert capped.plain == "a\nb\nc"
+
+
+def test_tail_cap_floor_is_three():
+    t = Text("\n".join(f"l{i}" for i in range(10)))
+    capped = chat_view._tail_cap(t, height=1)             # cap = max(3, -5) = 3
+    assert capped.plain.split("\n") == ["l7", "l8", "l9"]

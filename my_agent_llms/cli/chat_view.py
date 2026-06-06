@@ -41,6 +41,22 @@ def _step_lines_from_text(text_obj: Text, dot_color: str) -> Text:
     return out
 
 
+def _tail_cap(text_obj: Text, height: int, reserve: int = 6) -> Text:
+    """把 Text 截到尾部 max(3, height-reserve) 行 —— 给底部 live 尾区用,
+    保证活跃段渲染高度不超终端(避免 Live overflow 花屏)。
+    reserve 预留给 spinner / 边距。短于上限则原样返回。"""
+    cap = max(3, height - reserve)
+    lines = text_obj.split("\n", include_separator=False)
+    if len(lines) <= cap:
+        return text_obj
+    out = Text()
+    for i, line in enumerate(lines[-cap:]):
+        if i:
+            out.append("\n")
+        out.append_text(line)
+    return out
+
+
 def _now_hhmm() -> str:
     return datetime.now().strftime("%H:%M")
 
