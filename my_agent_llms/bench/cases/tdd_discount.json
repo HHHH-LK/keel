@@ -1,0 +1,10 @@
+{
+  "id": "tdd_discount",
+  "task": "在工作区创建 discount.py,实现函数 discount(price, rate):返回打折后价格,rate=0.2 表示打八折(即 price*(1-rate))。",
+  "setup_files": {},
+  "checks": [
+    {"type": "command_ok",
+     "params": {"cmd": "python3 -c \"from discount import discount as d; assert d(100,0.2)==80 and d(50,0.0)==50 and d(100,1.0)==0\""},
+     "weight": 10, "is_hard_oracle": true}
+  ]
+}
