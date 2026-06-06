@@ -16,6 +16,7 @@ from my_agent_llms.core.config import Config
 from my_agent_llms.core.llm import MyLLM
 from my_agent_llms.core.message import Message
 from my_agent_llms.tools.registry import ToolRegistry
+from my_agent_llms.verify.replan import make_plan
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class MyFunctionCallAgent(Agent):
                  tool_timeout: Optional[float] = None,
                  workspace=None,
                  enable_verify: bool = False,
+                 replan_budget: int = 1,
                  spec_generator=None,
                  convergence_judge=None,
                  **kwargs):
@@ -68,6 +70,7 @@ class MyFunctionCallAgent(Agent):
         self.last_tool_call_count = 0  # chat 层读取用作 meta
         self._install_memory_tools(self.tool_registry)
         # ── 在线验证-重试(默认关闭,开关隔离,不破坏旧行为)──
+        self.replan_budget = replan_budget
         self.enable_verify = enable_verify
         if enable_verify:
             from my_agent_llms.verify import (
@@ -239,8 +242,13 @@ class MyFunctionCallAgent(Agent):
             has_effective=effective_count(spec, passed) > 0)
         history.append(Round(residual=res, fingerprint=fp))
         stop = verdict != Verdict.CONTINUE
-        return {"best": best, "stop": stop,
+        needs_replan = verdict in (Verdict.STUCK, Verdict.OSCILLATING)
+        return {"best": best, "stop": stop, "needs_replan": needs_replan,
                 "feedback": feedback_from(spec, passed) or "请继续完善答案。"}
+
+    def _make_plan(self, task: str, stuck_feedback: str) -> str:
+        """卡住时换思路重新规划(薄包装 verify.replan.make_plan,便于测试 monkeypatch)。"""
+        return make_plan(self.llm, task, stuck_feedback)
 
     def _tool_is_side_effect_free(self, name: str) -> bool:
         """白名单判定:仅 Tool.side_effect_free=True 的才允许并行。
