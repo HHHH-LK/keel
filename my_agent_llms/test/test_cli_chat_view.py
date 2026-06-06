@@ -197,3 +197,20 @@ def test_unknown_tool_falls_back_to_generic_body():
         r.close()
     out = _capture_renderer(run)
     assert "2" in out
+
+
+def test_system_notice_renders_muted_bracketed():
+    out = _capture(chat_view.render_system_notice, "info", "上下文已压缩")
+    assert "上下文已压缩" in out
+    assert "⏺" not in out          # 不是工具行,也不是 ┃ 用户条
+
+
+def test_renderer_system_notice_closes_text_first():
+    def run(console):
+        r = chat_view.StreamingAgentRenderer(console)
+        r.text_chunk("回答中")
+        r.system_notice("warn", "已中断")
+        r.close()
+    out = _capture_renderer(run)
+    assert "回答中" in out
+    assert "已中断" in out

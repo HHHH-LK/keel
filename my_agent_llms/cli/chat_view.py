@@ -297,6 +297,17 @@ def _render_tool_diff(summary: str, lines: List[Tuple[str, str, str]],
     return out
 
 
+_NOTICE_PREFIX = {"info": "·", "warn": "⚠", "error": "⊘"}
+
+
+def render_system_notice(console: Console, kind: str, text: str) -> None:
+    """框架级系统提示(压缩/中断/context 告警):独立暗色样式,区别于 ⏺/┃。"""
+    t = Text()
+    t.append(f"  {_NOTICE_PREFIX.get(kind, '·')} ", style=theme.DIM)
+    t.append(text, style=theme.DIM)
+    console.print(t)
+
+
 def render_user(console: Console, text: str) -> None:
     """Echo the user's input with cyan bar + role label."""
     console.print()
@@ -549,6 +560,14 @@ class StreamingAgentRenderer:
         color = _result_dot_color(body)
         self._flush_tool_notice(result_color=color)
         self.console.print(_continuation_lines(body, color, more=hidden))
+
+    def system_notice(self, kind: str, text: str) -> None:
+        """系统提示:先收掉当前 text 段,再打独立暗色提示行。"""
+        if not text:
+            return
+        self._ensure_started()
+        self._close_text()
+        render_system_notice(self.console, kind, text)
 
     def close(self, tools_used: int = 0, elapsed_seconds: float = 0.0,
               tokens_in: int = 0, tokens_out: int = 0) -> None:
