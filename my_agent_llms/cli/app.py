@@ -317,6 +317,8 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
             ),
             memory_config=memory_config,
             max_steps=1000,
+            workspace=ws,
+            enable_verify=True,
         )
     except Exception as exc:
         help_view.print_error(console, f"Agent 构造失败: {exc}")
