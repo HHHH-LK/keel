@@ -65,3 +65,9 @@ def test_converged_beats_max_steps():
     j = ConvergenceJudge(hard_cap=3, K=2)
     history = [Round(residual=2.0, fingerprint="f0"), Round(residual=1.0, fingerprint="f1")]
     assert j.judge(2, 0.0, "f2", history) == Verdict.CONVERGED
+
+
+def test_fingerprint_sensitive_to_tool_sequence():
+    a = [{"role": "assistant", "tool_calls": [{"function": {"name": "read_file"}}]}]
+    b = [{"role": "assistant", "tool_calls": [{"function": {"name": "write_file"}}]}]
+    assert fingerprint("same", a) != fingerprint("same", b)

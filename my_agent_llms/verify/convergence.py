@@ -41,24 +41,26 @@ def fingerprint(result: str, trajectory: List[Dict[str, Any]]) -> str:
 class ConvergenceJudge:
     def __init__(self, *, soft_limit: int = 3, hard_cap: int = 5,
                  K: int = 2, eps: float = 1e-6):
-        self.soft_limit = soft_limit
+        self.soft_limit = soft_limit  # 预留:soft→hard 延长逻辑(设计 §6)尚未在 MVP 启用
         self.hard_cap = hard_cap
         self.K = K
         self.eps = eps
 
-    def judge(self, round_idx: int, residual: float, fingerprint: str,
+    def judge(self, round_idx: int, residual: float, fp: str,
               history: List[Round]) -> Verdict:
         # 1. 残差归零 → 收敛(优先级最高)
         if residual <= self.eps:
             return Verdict.CONVERGED
         # 2. 指纹重现 → 震荡(A→B→A 来回改)
-        if any(h.fingerprint == fingerprint for h in history):
+        if any(h.fingerprint == fp for h in history):
             return Verdict.OSCILLATING
         # 3. 最近 K 轮残差未严格下降 → 卡住(凑满 K 轮才判)
-        window = [h.residual for h in history[-(self.K - 1):]] + [residual] \
-            if self.K > 1 else [residual]
-        if len(window) >= self.K and (window[0] - window[-1]) <= self.eps:
-            return Verdict.STUCK
+        # 卡住:看最近 K 轮(history 末 K-1 + 当前),凑满 K 轮且首尾未严格下降才判。
+        # K<2 时窗口无法度量下降,不判 STUCK。
+        if self.K >= 2:
+            recent = [h.residual for h in history[-(self.K - 1):]] + [residual]
+            if len(recent) >= self.K and (recent[0] - recent[-1]) <= self.eps:
+                return Verdict.STUCK
         # 4. 到硬上限 → 硬停
         if round_idx >= self.hard_cap - 1:
             return Verdict.MAX_STEPS
