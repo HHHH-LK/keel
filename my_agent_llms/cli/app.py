@@ -899,11 +899,11 @@ class ChatCLI:
             _stop_status()
             renderer_slot["current"].text_chunk(text)
 
-        def _on_reasoning(_text: str) -> None:
-            # 思考模型 (MiMo/DeepSeek-R1 等) 推理阶段:没有可见 content,
-            # 之前 spinner 被首段 content 停掉了,屏上看着是"卡死"。
-            # 一旦收到 reasoning chunk 就把 spinner 转起来,告诉用户"在思考"
-            _restart_status()
+        def _on_reasoning(text: str) -> None:
+            # 思考模型 (MiMo/DeepSeek-R1 等) 推理阶段:把 reasoning 作为 ✻ 暗色块
+            # 流式显示(段落结束折叠 commit),而非只转 spinner —— 让"在想什么"可见。
+            _stop_status()
+            renderer_slot["current"].reasoning_chunk(text)
 
         def _on_tool(name: str, args: Dict) -> None:
             _stop_status()
