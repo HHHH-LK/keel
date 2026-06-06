@@ -118,3 +118,29 @@ def test_verify_returns_best_when_max_steps_exhausted_without_verdict(monkeypatc
     out = agent.run("t")
     assert out == "has X"                 # 轮2 含 X,残差最低 → best
     assert len(agent._captured) == 2      # 没有第三次(兜底)LLM 调用
+
+
+def test_agent_stores_workspace():
+    """workspace 经构造注入并存为 self.workspace;enable_verify 默认 False。"""
+    from my_agent_llms.core.llm import MyLLM
+    from my_agent_llms.workspace.workspace import Workspace
+    from my_agent_llms.memory import MemoryConfig
+    from pathlib import Path
+    import tempfile
+
+    llm = MyLLM.__new__(MyLLM)
+    llm.provider = "openai"
+    llm.model = "stub"
+    llm.client = SimpleNamespace()
+    llm.temperature = 0
+    llm.max_tokens = 100
+
+    ws = Workspace(root=tempfile.mkdtemp())
+    agent = MyFunctionCallAgent(
+        name="t", llm=llm, tool_registry=ToolRegistry(),
+        workspace=ws,
+        memory_config=MemoryConfig(
+            storage_dir=Path(tempfile.mkdtemp()),
+            cold_backend="none", vector_backend="memory"))
+    assert agent.workspace is ws
+    assert agent.enable_verify is False

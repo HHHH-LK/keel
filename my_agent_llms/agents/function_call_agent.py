@@ -48,6 +48,7 @@ class MyFunctionCallAgent(Agent):
                  config: Optional[Config] = None,
                  max_steps: int = 5,
                  tool_timeout: Optional[float] = None,
+                 workspace=None,
                  enable_verify: bool = False,
                  spec_generator=None,
                  convergence_judge=None,
@@ -62,6 +63,8 @@ class MyFunctionCallAgent(Agent):
         # 单工具执行超时(秒)。None = 不限。超时只"放弃等待"并回喂文案,
         # 不强杀线程(Python 线程杀不掉;后台线程会继续跑到自己结束)。
         self.tool_timeout = tool_timeout
+        # 文件类任务的产物边界:注入后 verify 的 field_equals/command_ok 硬 oracle 才能读回校验。
+        self.workspace = workspace
         self.last_tool_call_count = 0  # chat 层读取用作 meta
         self._install_memory_tools(self.tool_registry)
         # ── 在线验证-重试(默认关闭,开关隔离,不破坏旧行为)──
