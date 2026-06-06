@@ -294,7 +294,9 @@ class MyFunctionCallAgent(Agent):
                 implement_fn=self._tdd_implement,
                 user_override=None)
             if result.degraded:
-                # 降级:回到普通工具循环跑一遍(此时 _in_tdd=True,不会再触发 TDD)
+                # 降级:回到普通工具循环跑一遍(此时 _in_tdd=True,不会再触发 TDD)。
+                # 先恢复 verify,让降级回退仍享有事后验证这层保险。
+                self.enable_verify = saved_verify
                 return self.run(input_text)
             return result.message
         finally:
