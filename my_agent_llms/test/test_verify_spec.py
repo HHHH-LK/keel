@@ -63,3 +63,11 @@ def test_spec_generator_skips_malformed_keeps_valid():
     assert len(spec.checks) == 1
     assert spec.checks[0].type == "string_contains"
     assert spec.checks[0].id == "c0"   # id 缺省 → f"c{i}"
+
+
+def test_package_exports():
+    import my_agent_llms.verify as v
+    for name in ["Check", "CheckSpec", "SpecGenerator", "CheckContext",
+                 "CheckerRunner", "residual", "Verdict", "ConvergenceJudge",
+                 "fingerprint", "VerifyResult", "VerifyRetryLoop"]:
+        assert hasattr(v, name), f"missing export: {name}"
