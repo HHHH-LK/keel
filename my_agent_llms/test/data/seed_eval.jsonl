@@ -10,3 +10,4 @@
 {"content": "你好呀今天天气不错", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "state"}
 {"content": "我喜欢喝美式咖啡", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "preference"}
 {"content": "我喜欢生成艺术", "role": "user", "task_turn": false, "expect_promote": false, "expect_type": "preference"}
+{"content": "我对花生过敏", "role": "user", "task_turn": true, "expect_promote": false, "expect_type": "hard_constraint", "note": "已知取舍:工具轮里说的真约束被 seed 层压到阈值下不立即固化,靠证据毕业/KG 兜底"}
