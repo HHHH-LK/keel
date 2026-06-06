@@ -100,3 +100,21 @@ def test_verify_returns_best_on_max_steps(monkeypatch):
         enable_verify=True, spec=spec)
     out = agent.run("t")
     assert out == "has X"
+
+
+def test_verify_returns_best_when_max_steps_exhausted_without_verdict(monkeypatch):
+    # max_steps=2 < hard_cap=5, K=99 → 两轮都判 CONTINUE,主循环耗尽 → 必须返回 best,
+    # 不能再做无验证兜底调用。
+    spec = CheckSpec(task="t", checks=[
+        Check(id="a", type="string_contains", params={"s": "X"}),
+        Check(id="b", type="string_contains", params={"s": "Y"}),
+    ])
+    agent = _make_agent(
+        monkeypatch,
+        [_text_response("none"), _text_response("has X")],  # 只给两条:若触发兜底第三次调用会 IndexError
+        enable_verify=True, spec=spec)
+    agent.max_steps = 2
+    agent.convergence_judge = ConvergenceJudge(hard_cap=5, K=99)
+    out = agent.run("t")
+    assert out == "has X"                 # 轮2 含 X,残差最低 → best
+    assert len(agent._captured) == 2      # 没有第三次(兜底)LLM 调用

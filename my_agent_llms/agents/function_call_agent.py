@@ -104,6 +104,8 @@ class MyFunctionCallAgent(Agent):
         _verify_round = 0
         _verify_history: list = []
         _verify_best = None
+        # 注意(Phase 1 已知限制):验证重试轮与工具轮共享 self.max_steps 预算。
+        # 工具用得多时验证轮会被挤压,可能到不了 convergence_judge.hard_cap。Phase 2 再拆独立预算。
         for _ in range(self.max_steps):
             t_llm = time.monotonic()
             response = self._invoke_with_tools(
@@ -168,6 +170,11 @@ class MyFunctionCallAgent(Agent):
                 on_permission_request=on_permission_request,
                 on_tool_result=on_tool_result,
             )
+
+        # 验证开启且主循环耗尽预算却没 break:返回全程最优的已验证候选,
+        # 而不是再做一次"无验证"的兜底调用(否则丢掉 best、违背"始终返回 best")。
+        if not final_response and getattr(self, "enable_verify", False) and _verify_best is not None:
+            final_response = _verify_best.result
 
         if not final_response:
             t_llm = time.monotonic()
