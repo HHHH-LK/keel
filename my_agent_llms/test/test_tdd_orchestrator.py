@@ -80,6 +80,34 @@ def test_impl_never_green_returns_honest_failure(tmp_path):
     assert "没过" in res.message  # 如实告知,不假装成功
 
 
+def test_write_failure_degrades(tmp_path):
+    """写盘异常(越界/磁盘满)→ 降级走老路,不抛到调用方。"""
+    class BoomWorkspace:
+        def __init__(self, root): self.root = root
+        def resolve(self, relpath): raise RuntimeError("disk full")
+        def resolve_read(self, relpath): return self.root / relpath
+    res = run_tdd(
+        llm=None, workspace=BoomWorkspace(tmp_path), task="写 add",
+        implement_fn=lambda *a, **k: None, classify_fn=_yes,
+        author_fn=_author([("test_add.py", "x")]),
+        runner_fn=lambda *a, **k: RunResult(RunOutcome.PASS))
+    assert res.degraded is True and res.success is False
+
+
+def test_implement_callback_exception_does_not_crash(tmp_path):
+    """实现回调每轮都抛 → 不崩,诚实失败(由 impl_budget 兜底)。"""
+    ws = FakeWorkspace(tmp_path)
+    def boom_impl(task, paths, fb):
+        raise RuntimeError("impl boom")
+    res = run_tdd(
+        llm=None, workspace=ws, task="写 add",
+        implement_fn=boom_impl, classify_fn=_yes,
+        author_fn=_author([("test_add.py", "x")]),
+        runner_fn=lambda *a, **k: RunResult(RunOutcome.MISSING_IMPL),
+        impl_budget=2)
+    assert res.success is False
+
+
 def test_implementer_cannot_tamper_tests(tmp_path):
     """隔离不变量:实现方偷改了测试文件 → 即便绿也拒绝。"""
     ws = FakeWorkspace(tmp_path)
