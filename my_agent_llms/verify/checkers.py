@@ -1,0 +1,102 @@
+"""检查器库:每个 check 类型 = 一个核对函数。字符串匹配只是最弱的一种。
+
+铁律(spec §2.6):能客观就别主观——
+现成工具/执行 > 结构化解析 > 轨迹查询 > embedding 语义 > LLM judge。
+任何核对异常一律视为"未通过"(返回 False),绝不让验证本身崩溃。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import subprocess
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterator, List, Optional
+
+from my_agent_llms.verify.spec import Check, CheckSpec
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CheckContext:
+    """一次验证能看到的全部:产出、轨迹、环境。"""
+    result: str = ""                       # agent 最终文本产出
+    trajectory: List[Dict[str, Any]] = field(default_factory=list)  # messages
+    workspace: Any = None                  # Workspace | None(文件类任务的产物)
+    source: Optional[str] = None           # 对照类任务的参考原文
+
+
+def _iter_tool_calls(trajectory: List[Dict[str, Any]]) -> Iterator[Dict[str, Any]]:
+    """遍历轨迹里所有 assistant 发起的 tool_calls。"""
+    for msg in trajectory:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            if isinstance(fn, dict):
+                yield fn
+
+
+def check_one(check: Check, ctx: CheckContext, *, llm=None) -> bool:
+    """按类型分发核对。任何异常 → False(未通过)。"""
+    try:
+        t = check.type
+        p = check.params
+        if t == "string_contains":
+            return p["s"] in ctx.result
+        if t == "string_absent":
+            return p["s"] not in ctx.result
+        if t == "field_equals":
+            if ctx.workspace is None:
+                return False
+            path = ctx.workspace.resolve_read(p["path"])
+            obj = json.loads(path.read_text(encoding="utf-8"))
+            return obj.get(p["key"]) == p["value"]
+        if t == "command_ok":
+            cwd = getattr(ctx.workspace, "root", None) if ctx.workspace else None
+            proc = subprocess.run(
+                p["cmd"], shell=True, cwd=str(cwd) if cwd else None,
+                capture_output=True, timeout=p.get("timeout", 30),
+            )
+            return proc.returncode == 0
+        if t == "tool_called":
+            want = p["tool"]
+            return any(fn.get("name") == want for fn in _iter_tool_calls(ctx.trajectory))
+        if t == "judge":
+            if llm is None:
+                return False
+            verdict = _llm_judge(llm, p["rubric"], ctx)
+            return verdict
+        if t == "semantic_support":
+            # Phase 2 实现(embedding 对照),本阶段不支持。
+            logger.warning("semantic_support 尚未实现(Phase 2),视为未通过")
+            return False
+        logger.warning("未知 check 类型 %r,视为未通过", t)
+        return False
+    except Exception:
+        logger.exception("check %s (type=%s) 核对异常,视为未通过", check.id, check.type)
+        return False
+
+
+def _llm_judge(llm, rubric: str, ctx: CheckContext) -> bool:
+    """最弱兜底:独立 LLM 调用,只回 PASS/FAIL。解析首词。"""
+    prompt = (
+        "你是一个独立的验收员。只根据给定标准判断产出是否通过,"
+        "不要补充答案、不要解释过多。\n"
+        "第一行必须只输出 PASS 或 FAIL。\n\n"
+        f"# 验收标准\n{rubric}\n\n"
+        f"# 待验收产出\n{ctx.result}\n"
+    )
+    reply = llm.invoke([{"role": "system", "content": prompt}]) or ""
+    head = reply.strip().upper()
+    return head.startswith("PASS")
+
+
+class CheckerRunner:
+    """用 checks[] 逐条核对 ctx,返回 {check_id -> bool}。保证每个 id 都有键。"""
+
+    def __init__(self, *, llm=None):
+        self.llm = llm
+
+    def run(self, spec: CheckSpec, ctx: CheckContext) -> Dict[str, bool]:
+        return {c.id: check_one(c, ctx, llm=self.llm) for c in spec.checks}
