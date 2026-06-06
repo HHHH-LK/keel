@@ -124,11 +124,17 @@ class PlaybookCard(BaseModel):
         self.last_refresh = datetime.now()
 
     def should_archive(self, threshold: float = 0.3) -> bool:
-        """是否应该撤下到 archived(不删除)。"""
+        """是否应该撤下到 archived(不删除)。
+
+        - user_pinned 永不撤。
+        - 非 seed 来源的 hard_constraint 永久免死(KG/用户显式/实绩毕业更可信)。
+        - seed_promoted 的 hard_constraint 不享受永久保护:没被反复召回续命 →
+          confidence 跌破阈值即可撤下,实现误判自愈。
+        """
         if self.user_pinned:
             return False
-        if self.is_hard_constraint():
-            return False  # 硬约束需用户显式 /forget
+        if self.is_hard_constraint() and self.source != L0Source.SEED_PROMOTED:
+            return False
         return self.confidence < threshold
 
 

@@ -353,6 +353,27 @@ def test_l0_persists_across_manager_restart():
         assert any("张三" in c for c in contents)
 
 
+def test_seed_hard_constraint_can_archive():
+    # seed 来源的 hard_constraint:置信度低 → 可撤下(误判自愈)
+    seed = PlaybookCard(
+        content="文件必须包含字段 status", type=L0Type.HARD_CONSTRAINT,
+        source=L0Source.SEED_PROMOTED, confidence=0.1,
+    )
+    assert seed.should_archive()
+    # 非 seed 来源(用户显式)hard_constraint:仍永久免死
+    explicit = PlaybookCard(
+        content="我对花生过敏", type=L0Type.HARD_CONSTRAINT,
+        source=L0Source.USER_EXPLICIT, confidence=0.1,
+    )
+    assert not explicit.should_archive()
+    # user_pinned 永远不撤
+    pinned = PlaybookCard(
+        content="x", type=L0Type.HARD_CONSTRAINT,
+        source=L0Source.SEED_PROMOTED, confidence=0.0, user_pinned=True,
+    )
+    assert not pinned.should_archive()
+
+
 def test_classify_task_directive_not_hard_constraint():
     # 通用祈使词但非自指 → 不再判 hard_constraint
     assert classify_content_type("回答里必须包含编程语言") != L0Type.HARD_CONSTRAINT
