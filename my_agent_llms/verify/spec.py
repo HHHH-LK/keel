@@ -37,12 +37,15 @@ _SPEC_PROMPT = """你是验收规格生成器,**不是任务执行者**。
 1. command_ok    —— 跑命令看 exit code(可执行真 oracle),params={{"cmd": "..."}}
 2. field_equals  —— 解析产物文件取键比对,params={{"path","key","value"}}
 3. tool_called   —— 任务要求必须用过某工具,params={{"tool": "..."}}
-4. string_contains / string_absent —— 产出必须含/不含某串,params={{"s": "..."}}
+4. string_contains / string_absent —— **agent 文本回答**(对话输出,看不到文件)必须含/不含某串,params={{"s": "..."}}
 5. judge         —— 实在无法客观核对时的兜底,params={{"rubric": "..."}}
 
 command_ok 命令必须单行可执行;若用 python3 -c,**只能写单个表达式或分号连接的简单语句,
 禁止 for/if/while 等复合语句**(单行 `; for` 是 SyntaxError)。需要遍历校验时改用单表达式,如:
 python3 -c "import json;d=json.load(open('f.json'));assert all(x['k'].startswith('v') for x in d['items'])"
+
+⚠️ string_*/judge 只能看到 agent 的【文本回答】,看不到文件系统;**任何对文件内容/存在性的检查,
+必须用 command_ok 或 field_equals**(它们能读文件),绝不要用 string_contains 去验文件内容。
 
 可用工具: {tools}
 

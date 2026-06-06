@@ -71,3 +71,10 @@ def test_runner_mixed_skip_and_pass(tmp_path):
     assert results["good"] is True     # 好命令过
     assert residual(spec, results) == 0.0
     assert effective_count(spec, results) == 1
+
+
+# ── SpecGenerator prompt 明确 string_* 看不到文件,文件内容用 command_ok/field_equals ──
+def test_spec_prompt_warns_string_checks_cannot_see_files():
+    from my_agent_llms.verify.spec import _SPEC_PROMPT
+    assert "文本回答" in _SPEC_PROMPT                  # string_* 语义被澄清
+    assert "command_ok 或 field_equals" in _SPEC_PROMPT  # 文件内容的正确选型被点名
