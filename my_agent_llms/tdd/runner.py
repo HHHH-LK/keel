@@ -37,7 +37,8 @@ _MISSING_MARKERS = ("ModuleNotFoundError", "ImportError",
 def run_pytest(target_dir: str, paths: Optional[List[str]] = None,
                timeout: float = 60.0) -> RunResult:
     """在 target_dir 下跑 pytest。paths=None 跑整目录。异常/超时 → BROKEN。"""
-    cmd = [sys.executable, "-m", "pytest", "-v", "--no-header", "-p", "no:cacheprovider"]
+    cmd = [sys.executable, "-m", "pytest", "-v", "--no-header",
+           "--color=no", "-p", "no:cacheprovider"]
     if paths:
         cmd.extend(paths)
     try:
@@ -55,9 +56,13 @@ def run_pytest(target_dir: str, paths: Optional[List[str]] = None,
     # 收集阶段 0 用例 / 收集错误 → 坏
     if proc.returncode == 5 or ("no tests ran" in out.lower() and not passed and not failed):
         outcome = RunOutcome.BROKEN
+    # v1 限制:SyntaxError 一律判 BROKEN(打回出题方)。若是"被测实现文件"自身语法错,
+    # 严格说该归实现方;但红门阶段实现通常还没写,绿门对 BROKEN 也会判 STILL_RED 喂回实现方,
+    # 故实际影响仅限"改既存带语法错文件的红门"这一窄场景。精确按目标符号归因留作 v2。
     elif any(m in out for m in _BROKEN_MARKERS):
         outcome = RunOutcome.BROKEN
-    elif proc.returncode == 0 and passed and not failed:
+    # rc==0 即无失败;passed 为空(全 skip/xpass)也算通过,不判 BROKEN。
+    elif proc.returncode == 0 and not failed:
         outcome = RunOutcome.PASS
     elif any(m in out for m in _MISSING_MARKERS):
         outcome = RunOutcome.MISSING_IMPL
@@ -72,7 +77,8 @@ def run_pytest(target_dir: str, paths: Optional[List[str]] = None,
         summary=_summarize(outcome, passed, failed, out), raw=out)
 
 
-def _summarize(outcome, passed, failed, out) -> str:
+def _summarize(outcome: RunOutcome, passed: List[str],
+               failed: List[str], out: str) -> str:
     if outcome == RunOutcome.PASS:
         return f"全部通过({len(passed)} 个用例)"
     if outcome == RunOutcome.ASSERT_FAIL:
