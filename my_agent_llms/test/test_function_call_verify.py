@@ -81,9 +81,9 @@ def test_verify_retries_until_pass(monkeypatch):
         enable_verify=True, spec=spec)
     out = agent.run("t")
     assert out == "最终结论给出"        # 第一答缺"结论"→反馈喂回→第二答补上
-    # 第二次 LLM 调用应看到注入的 system feedback
+    # 第二次 LLM 调用应看到注入的 user feedback
     feedback_msgs = [m for m in agent._captured[1]
-                     if m.get("role") == "system" and "验收项" in m.get("content", "")]
+                     if m.get("role") == "user" and "验收项" in m.get("content", "")]
     assert feedback_msgs
 
 

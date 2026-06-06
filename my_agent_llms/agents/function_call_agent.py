@@ -143,7 +143,7 @@ class MyFunctionCallAgent(Agent):
                 if gate["stop"]:
                     final_response = gate["best"].result
                     break
-                messages.append({"role": "system", "content": gate["feedback"]})
+                messages.append({"role": "user", "content": gate["feedback"]})
                 continue
 
             messages.append({
