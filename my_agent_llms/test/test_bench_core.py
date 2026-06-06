@@ -51,3 +51,23 @@ def test_summarize():
     out = summarize([Score("a", True, 0.0, []), Score("b", False, 2.0, ["string_contains"])])
     assert "1/2" in out
     assert "a" in out and "b" in out
+
+
+def test_run_case_with_mock_factory():
+    from my_agent_llms.bench.runner import run_case
+    import os
+    case = BenchCase(id="c1", task="写 hi", setup_files={"seed.txt": "S"}, checks=[])
+    captured = {}
+
+    def factory(ws_root):
+        captured["ws"] = ws_root
+
+        class A:
+            def run(self, task, **kw):
+                return f"done:{task}"
+        return A()
+
+    rr = run_case(case, factory)
+    assert rr.answer == "done:写 hi"
+    assert rr.case_id == "c1"
+    assert os.path.exists(os.path.join(captured["ws"], "seed.txt"))   # setup_files 写进隔离 ws
