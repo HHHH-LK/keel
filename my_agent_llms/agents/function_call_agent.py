@@ -56,6 +56,7 @@ class MyFunctionCallAgent(Agent):
                  todo_store=None,
                  spec_generator=None,
                  convergence_judge=None,
+                 enable_tdd: bool = False,
                  **kwargs):
         super().__init__(name, llm, system_prompt, config, **kwargs)
         if llm.provider not in MyLLM.OPENAI_COMPATIBLE_PROVIDERS:
@@ -75,6 +76,9 @@ class MyFunctionCallAgent(Agent):
         self.replan_budget = replan_budget
         self.todo_store = todo_store
         self.enable_verify = enable_verify
+        # ── TDD 模式(默认关闭,开关隔离)──
+        self.enable_tdd = enable_tdd
+        self._in_tdd = False   # 重入保护:_run_tdd 内部再调 run() 写实现时不再触发 TDD
         if enable_verify:
             from my_agent_llms.verify import (
                 SpecGenerator, CheckerRunner, ConvergenceJudge)
@@ -97,6 +101,9 @@ class MyFunctionCallAgent(Agent):
             on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
             **kwargs) -> str:
         """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。"""
+        _tdd = self._maybe_run_tdd(input_text)
+        if _tdd is not None:
+            return _tdd
         system_prompt = self._apply_honesty_contract(self.system_prompt)
         # query=input_text 让 memory 做 L0 query-aware 加权 + 被动 recall
         messages: List[Dict[str, Any]] = list(
@@ -263,6 +270,44 @@ class MyFunctionCallAgent(Agent):
     def _make_plan(self, task: str, stuck_feedback: str) -> str:
         """卡住时换思路重新规划(薄包装 verify.replan.make_plan,便于测试 monkeypatch)。"""
         return make_plan(self.llm, task, stuck_feedback)
+
+    def _maybe_run_tdd(self, input_text: str):
+        """run() 顶部调用。接管返回最终字符串;不接管返回 None(走老路)。"""
+        if not getattr(self, "enable_tdd", False) or getattr(self, "_in_tdd", False):
+            return None
+        if not self._tdd_should_run(input_text):
+            return None
+        return self._run_tdd(input_text)
+
+    def _tdd_should_run(self, input_text: str) -> bool:
+        from my_agent_llms.tdd import classify
+        return classify(self.llm, input_text).use_tdd
+
+    def _run_tdd(self, input_text: str) -> str:
+        from my_agent_llms.tdd import run_tdd
+        self._in_tdd = True
+        saved_verify = self.enable_verify
+        self.enable_verify = False   # TDD 自带红/绿门,关掉事后 verify 避免双重验证
+        try:
+            result = run_tdd(
+                llm=self.llm, workspace=self.workspace, task=input_text,
+                implement_fn=self._tdd_implement,
+                user_override=None)
+            if result.degraded:
+                # 降级:回到普通工具循环跑一遍(此时 _in_tdd=True,不会再触发 TDD)
+                return self.run(input_text)
+            return result.message
+        finally:
+            self._in_tdd = False
+            self.enable_verify = saved_verify
+
+    def _tdd_implement(self, task: str, test_paths, feedback: str) -> None:
+        """实现回调:让主 agent 用工具循环写实现去满足测试(不许改测试)。"""
+        prompt = (f"请写实现,让这些测试通过:{', '.join(test_paths)}。"
+                  f"先用 Read 读测试了解要求。**不要修改测试文件**,只写实现代码。")
+        if feedback:
+            prompt += f"\n上一轮:{feedback}"
+        self.run(prompt)  # _in_tdd=True 保证不再触发 TDD;enable_verify 已临时关闭
 
     def _refresh_todo_injection(self, messages):
         """每轮 invoke 前就地刷新 todo 注入:删上一份、加当前(非空才加)。短任务零开销。"""
