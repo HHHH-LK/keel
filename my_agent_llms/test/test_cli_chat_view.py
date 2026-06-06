@@ -112,13 +112,14 @@ def test_tool_result_folds_to_four_lines_with_more_marker():
 
 
 def test_tool_result_short_output_no_more_marker():
+    # ReadFile now shows a line-count summary instead of body text (P2-2 behavior).
     def run(console):
         r = chat_view.StreamingAgentRenderer(console)
         r.tool_notice("ReadFile", "a.py")
         r.tool_result("✅ ok\nline2", elapsed_sec=0.05)
         r.close()
     out = _capture_renderer(run)
-    assert "line2" in out
+    assert "Read 2 lines" in out
     assert "more lines" not in out
 
 
@@ -138,8 +139,9 @@ def test_multi_tool_round_pairs_each_result_with_its_notice():
     assert "ReadFile(b.py)" in out
     assert "ReadFile(c.py)" in out
     assert out.count("⏺") == 3
-    # 结果与各自的 ⏺ 配对
-    assert "a.py ok" in out and "b.py ok" in out and "c.py ok" in out
+    # ReadFile results are summarized (P2-2); each produces "Read 1 lines" summary.
+    # The 3 ⏺ headers confirm correct FIFO pairing — one per file.
+    assert out.count("Read 1 lines") == 3
 
 
 def test_close_flushes_unpaired_notices_as_headers():
@@ -175,3 +177,23 @@ def test_write_todo_renders_as_update_todos_checklist():
     assert "☐ 写测试" in out
     assert "◐ 实现功能" in out
     assert "☑ 跑通" in out
+
+
+def test_read_result_summarized_by_line_count():
+    def run(console):
+        r = chat_view.StreamingAgentRenderer(console)
+        r.tool_notice("ReadFile", "a.py")
+        r.tool_result("line1\nline2\nline3\nline4\nline5\nline6")  # 6 行
+        r.close()
+    out = _capture_renderer(run)
+    assert "Read 6 lines" in out
+
+
+def test_unknown_tool_falls_back_to_generic_body():
+    def run(console):
+        r = chat_view.StreamingAgentRenderer(console)
+        r.tool_notice("CalculatorTool", "1+1")
+        r.tool_result("2")
+        r.close()
+    out = _capture_renderer(run)
+    assert "2" in out

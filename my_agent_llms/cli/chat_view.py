@@ -243,6 +243,23 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{m}m{s:.0f}s"
 
 
+def _summarize_read(text: str) -> Optional[str]:
+    n = len(text.rstrip("\n").split("\n")) if text.strip() else 0
+    return f"Read {n} lines" if n else None
+
+
+def _summarize_grep(text: str) -> Optional[str]:
+    n = len([l for l in text.split("\n") if l.strip()])
+    return f"{n} matches" if n else None
+
+
+# 工具名 → 首行摘要函数;返回 None 则回退泛型 body
+_TOOL_RESULT_SUMMARY = {
+    "ReadFile": _summarize_read,
+    "GrepTool": _summarize_grep,
+}
+
+
 def _render_tool_diff(summary: str, lines: List[Tuple[str, str, str]],
                       truncated: int = 0) -> Text:
     """渲染 '⎿  summary' + 缩进的行号化 diff,跟 Claude Code Update 一致。
@@ -516,6 +533,18 @@ class StreamingAgentRenderer:
             body_lines = body.split("\n")
             body_lines[0] = f"{body_lines[0]}  ·  {_fmt_elapsed(elapsed_sec)}"
             body = "\n".join(body_lines)
+        # per-type 首行摘要(命中才用;否则泛型 body 不变)
+        head_name = self._pending[0][0] if self._pending else ""
+        summarizer = _TOOL_RESULT_SUMMARY.get(head_name)
+        if summarizer is not None:
+            summary = summarizer(text)
+            if summary:
+                if elapsed_sec is not None:
+                    summary = f"{summary}  ·  {_fmt_elapsed(elapsed_sec)}"
+                scolor = _result_dot_color(text)
+                self._flush_tool_notice(result_color=scolor)
+                self.console.print(_continuation_lines(summary, scolor))
+                return
         # 2. 用结果推断的颜色打 pending tool_notice,再接 ⎿ result(+折叠标记)
         color = _result_dot_color(body)
         self._flush_tool_notice(result_color=color)
