@@ -155,6 +155,28 @@ def _tool_notice_lines(name: str, preview: str, dot_color: str) -> Text:
     return out
 
 
+_TODO_MARK = {"[ ]": "☐", "[~]": "◐", "[x]": "☑"}
+
+
+def _render_update_todos(result_text: str) -> Text:
+    """把 TodoStore.render() 文本渲成 '  ⎿  ☐/◐/☑ 清单'(去掉 heading 行)。"""
+    out = Text()
+    out.append("  ⎿  ", style=theme.DIM)
+    first = True
+    for line in result_text.split("\n"):
+        line = line.rstrip()
+        if not line or line.startswith("## "):
+            continue
+        mark = _TODO_MARK.get(line[:3], "☐")
+        content = line[3:].strip()
+        style = "grey50 strike" if mark == "☑" else ("default" if mark == "◐" else "grey50")
+        if not first:
+            out.append("\n     ")
+        out.append(f"{mark} {content}", style=style)
+        first = False
+    return out
+
+
 # unified diff hunk 头:@@ -OLD_START[,OLD_COUNT] +NEW_START[,NEW_COUNT] @@
 _DIFF_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -468,6 +490,14 @@ class StreamingAgentRenderer:
         拿到完整结果,所以"细节"没丢,只是 UI 不堆。
         """
         if not text:
+            return
+        # write_todo → Claude Code 'Update Todos' 内联清单(而非泛型 ⎿ 文本)
+        if self._pending and self._pending[0][0] == "write_todo":
+            self._pending.pop(0)
+            self._ensure_started()
+            self._close_text()
+            self.console.print(_tool_notice_lines("Update Todos", "", theme.DEFAULT))
+            self.console.print(_render_update_todos(text))
             return
         self._ensure_started()
         self._close_text()

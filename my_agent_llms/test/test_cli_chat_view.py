@@ -161,3 +161,17 @@ def test_pinned_todo_path_is_retired():
     assert not hasattr(chat_view, "LiveTurnRenderer"), "LiveTurnRenderer 应已删除"
     assert not hasattr(chat_view, "render_todo_panel"), "render_todo_panel 应已删除"
     assert not hasattr(ChatCLI, "_chat_once_live"), "_chat_once_live 应已删除"
+
+
+def test_write_todo_renders_as_update_todos_checklist():
+    def run(console):
+        r = chat_view.StreamingAgentRenderer(console)
+        r.tool_notice("write_todo", "todos=[...]")
+        r.tool_result("## 当前任务清单(进度)\n[ ] 写测试\n[~] 实现功能\n[x] 跑通")
+        r.close()
+    out = _capture_renderer(run)
+    assert "Update Todos" in out
+    assert "write_todo(" not in out
+    assert "☐ 写测试" in out
+    assert "◐ 实现功能" in out
+    assert "☑ 跑通" in out
