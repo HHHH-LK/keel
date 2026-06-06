@@ -68,3 +68,14 @@ def test_returns_best_not_last_on_max_steps():
     assert out.verdict == Verdict.MAX_STEPS
     assert out.result == "X only"
     assert out.residual == 1.0
+
+
+def test_feedback_describes_command_ok_failure():
+    from my_agent_llms.verify.loop import feedback_from
+    spec = CheckSpec(task="t", checks=[
+        Check(id="a", type="command_ok", params={"cmd": "pytest"}, is_hard_oracle=True),
+    ])
+    msg = feedback_from(spec, {"a": False})
+    assert msg is not None
+    assert "pytest" in msg
+    assert "exit 0" in msg

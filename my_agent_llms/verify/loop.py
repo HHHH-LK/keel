@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Protocol, Tuple
 from my_agent_llms.verify.checkers import CheckContext, CheckerRunner
 from my_agent_llms.verify.convergence import ConvergenceJudge, Round, Verdict, fingerprint
 from my_agent_llms.verify.residual import residual
-from my_agent_llms.verify.spec import CheckSpec
+from my_agent_llms.verify.spec import CheckSpec, SpecGenerator
 
 
 class Executor(Protocol):
@@ -43,12 +43,33 @@ def feedback_from(spec: CheckSpec, passed: Dict[str, bool]) -> Optional[str]:
         return None
     lines = ["上一轮产出未通过以下验收项,请针对性修订(不要推倒重来,只补差距):"]
     for c in failed:
-        lines.append(f"- [{c.type}] {c.params}")
+        lines.append(f"- {_describe_check(c)}")
     return "\n".join(lines)
 
 
+def _describe_check(c) -> str:
+    """把一条 check 渲染成对模型有用的一句话提示(按类型抽最相关字段)。"""
+    p = c.params or {}
+    t = c.type
+    if t == "string_contains":
+        return f"产出必须包含: {p.get('s')!r}"
+    if t == "string_absent":
+        return f"产出不得包含: {p.get('s')!r}"
+    if t == "field_equals":
+        return f"产物文件 {p.get('path')!r} 的字段 {p.get('key')!r} 应等于 {p.get('value')!r}"
+    if t == "command_ok":
+        return f"检查命令必须成功(exit 0): {p.get('cmd')!r}"
+    if t == "tool_called":
+        return f"任务要求必须调用工具: {p.get('tool')!r}"
+    if t == "judge":
+        return f"需满足评审标准: {p.get('rubric')}"
+    if t == "semantic_support":
+        return f"需在语义上支持: {p.get('claim')}"
+    return f"[{t}] {p}"
+
+
 class VerifyRetryLoop:
-    def __init__(self, *, spec_gen, checker_runner: CheckerRunner,
+    def __init__(self, *, spec_gen: SpecGenerator, checker_runner: CheckerRunner,
                  judge: ConvergenceJudge):
         self.spec_gen = spec_gen
         self.checker_runner = checker_runner
@@ -71,6 +92,7 @@ class VerifyRetryLoop:
             verdict = self.judge.judge(r, res, fp, history)
             history.append(Round(residual=res, fingerprint=fp))
             if verdict != Verdict.CONTINUE:
+                # verdict = 为什么停;best = 返回哪一轮(全程残差最小那轮,防越修越差)
                 return VerifyResult(result=best.result, residual=best.residual,
                                     verdict=verdict, spec=spec, passed=best.passed)
             feedback = feedback_from(spec, passed)
