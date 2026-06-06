@@ -180,6 +180,43 @@ def test_realistic_scenarios():
         )
 
 
+from my_agent_llms.memory.seed_score import (
+    DIRECTIVE_PENALTY, TASK_TURN_PENALTY, is_hard_constraint_content,
+)
+
+
+def test_user_fact_is_hard_constraint():
+    assert is_hard_constraint_content("我对花生过敏")
+    assert is_hard_constraint_content("不能吃海鲜")          # 用户事实词,无需自指
+
+
+def test_generic_imperative_needs_self_reference():
+    assert is_hard_constraint_content("我必须每天吃药")        # 自指 → 算
+    assert not is_hard_constraint_content("回答里必须包含编程语言")  # 任务指令 → 不算
+    assert not is_hard_constraint_content("文件必须包含字段 status")  # 任务指令 → 不算
+
+
+def test_task_directive_scores_low():
+    s = evaluate_prior_score("回答里必须包含编程语言")
+    assert s < 0.4, f"任务指令应低于 0.4,实际 {s}"
+
+
+def test_task_turn_penalty_applied():
+    base = evaluate_prior_score("我对花生过敏", task_turn=False)
+    penalized = evaluate_prior_score("我对花生过敏", task_turn=True)
+    assert abs((base - penalized) - abs(TASK_TURN_PENALTY)) < 1e-9
+
+
+def test_directive_penalty_applied():
+    with_dir = evaluate_prior_score("我必须更新这个文件")     # 自指 hard_constraint + 文件(directive)
+    no_dir = evaluate_prior_score("我必须早睡")               # 自指 hard_constraint,无 directive
+    assert abs((no_dir - with_dir) - abs(DIRECTIVE_PENALTY)) < 1e-9
+
+
+def test_real_user_constraint_still_promotable():
+    assert evaluate_prior_score("我对花生过敏") >= 0.5
+
+
 if __name__ == "__main__":
     # 当作脚本跑,看每条场景的实际打分
     test_cases = [

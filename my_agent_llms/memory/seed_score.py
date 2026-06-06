@@ -18,15 +18,20 @@ from typing import Dict, List
 # 主分: 按 type 分档,取最高档(不累加)
 # 关键词命中即归入该档
 # ─────────────────────────────────────────────────────────
+# ── hard_constraint 拆成两层(spec A①)──────────────────────
+HARD_CONSTRAINT_SCORE = 0.50
+# 用户身体/事实词:通常是长期约束,无需自指即可算硬约束
+USER_FACT_KEYWORDS = ["过敏", "不能吃", "不能喝"]
+# 通用祈使词:任务指令也会用 → 仅在"自指(含我)"时才算硬约束
+GENERIC_IMPERATIVE_KEYWORDS = ["必须", "千万不要", "严禁", "忌讳", "禁忌", "不可以", "绝对不"]
+# 自指标记:表明"在说用户自己"
+SELF_REF_KEYWORDS = ["我", "咱", "俺", "本人"]
+# 产物/动作指令词:命中说明这是对助手/产物的祈使(任务指令)→ 扣分
+DIRECTIVE_KEYWORDS = ["回答", "输出", "结果", "文件", "创建", "生成",
+                      "写一个", "写个", "列出", "用一句话", "请"]
+
+# 其余三档维持"自指(我…)"原则
 CATEGORY_KEYWORDS: Dict[str, Dict] = {
-    "hard_constraint": {
-        "score": 0.50,
-        "keywords": [
-            "过敏", "禁忌", "不能吃", "不能喝",
-            "必须", "千万不要", "严禁", "忌讳",
-            "不可以", "绝对不",
-        ],
-    },
     "identity": {
         "score": 0.40,
         "keywords": [
@@ -60,6 +65,16 @@ CATEGORY_KEYWORDS: Dict[str, Dict] = {
 }
 
 
+def is_hard_constraint_content(content: str) -> bool:
+    """是否构成 hard_constraint:用户事实词直接算;通用祈使词仅在自指时算。"""
+    if any(kw in content for kw in USER_FACT_KEYWORDS):
+        return True
+    if any(kw in content for kw in GENERIC_IMPERATIVE_KEYWORDS) and \
+            any(kw in content for kw in SELF_REF_KEYWORDS):
+        return True
+    return False
+
+
 # ─────────────────────────────────────────────────────────
 # 调整规则: 在主分上做小幅修正(可累加)
 # ─────────────────────────────────────────────────────────
@@ -67,6 +82,8 @@ SHORT_MESSAGE_THRESHOLD = 10
 SHORT_MESSAGE_PENALTY = -0.20
 QUESTION_PENALTY = -0.15
 ASSISTANT_ROLE_PENALTY = -0.10
+DIRECTIVE_PENALTY = -0.40        # 命中产物/动作指令词(任务指令)
+TASK_TURN_PENALTY = -0.25        # 本轮调用过工具(任务轮)
 
 
 # ─────────────────────────────────────────────────────────
@@ -79,30 +96,23 @@ AUTO_PIN_THRESHOLD = 0.4
 KG_FEEDBACK_BOOST = 0.3
 
 
-def evaluate_prior_score(content: str, role: str = "user") -> float:
+def evaluate_prior_score(content: str, role: str = "user", *,
+                         task_turn: bool = False) -> float:
     """根据消息内容打种子分。
 
-    Step 1: 主分 = max(命中的所有档位的 score)
-    Step 2: 调整分 = sum(命中的调整规则)
-            短消息扣分(hard_constraint 类豁免)
-            问句扣分
-            assistant 自述扣分
+    Step 1: 主分 = max(hard_constraint 判定, 其余档命中的最高 score)
+    Step 2: 调整分(可累加):短消息/问句/assistant 自述/产物指令词/任务轮
     Step 3: clamp 到 [0, 1]
-
-    Args:
-        content: 消息文本
-        role: 消息角色 (user/assistant/system 等)
-
-    Returns:
-        prior_score, 范围 [0.0, 1.0]
     """
     if not content:
         return 0.0
 
     content = content.strip()
 
-    # Step 1: 主分(取最高档,不累加)
+    # Step 1: 主分
     base = 0.0
+    if is_hard_constraint_content(content):
+        base = HARD_CONSTRAINT_SCORE
     for category, conf in CATEGORY_KEYWORDS.items():
         if any(kw in content for kw in conf["keywords"]):
             if conf["score"] > base:
@@ -110,17 +120,16 @@ def evaluate_prior_score(content: str, role: str = "user") -> float:
 
     # Step 2: 调整分
     adj = 0.0
-    # 短消息扣分:只在"没命中任何关键词"时生效。
-    # 中文表达密度高(如"我喜欢喝美式咖啡"才 8 字),
-    # 命中关键词的短消息不应该被惩罚。
     if len(content) < SHORT_MESSAGE_THRESHOLD and base == 0:
         adj += SHORT_MESSAGE_PENALTY
-    # 问句扣分(问题不是事实陈述)
     if content.endswith(("?", "？")):
         adj += QUESTION_PENALTY
-    # assistant 自述扣分(避免 LLM 自己说的内容被高估)
     if role == "assistant":
         adj += ASSISTANT_ROLE_PENALTY
+    if any(kw in content for kw in DIRECTIVE_KEYWORDS):
+        adj += DIRECTIVE_PENALTY
+    if task_turn:
+        adj += TASK_TURN_PENALTY
 
     # Step 3: clamp
     return max(0.0, min(1.0, base + adj))
