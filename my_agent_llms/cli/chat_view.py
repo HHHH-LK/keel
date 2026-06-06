@@ -340,25 +340,27 @@ class StreamingAgentRenderer:
         body = render_markdown(text, width)
         return _step_lines_from_text(body, theme.DEFAULT)
 
+    def _active_frame(self, text: str) -> Text:
+        """活跃段的 live 帧:整段渲染后只取尾部若干行,防 Live 超终端高度。
+        全文由 _close_text 落 scrollback,这里截断不丢内容。"""
+        height = getattr(getattr(self.console, "size", None), "height", 24) or 24
+        return _tail_cap(self._framed_render(text), height)
+
     def _close_text(self) -> None:
         """text segment 切段:确保当前一行已结束,后续非 text 输出从行首开始。"""
         if not self._text_open:
             return
         if self._live is not None:
-            # 兜底:update/refresh 万一抛(rich 内部),也必须 stop,否则后台刷新线程
-            # 泄漏 → 终端花屏。finally 保证 stop + 清状态。
+            # transient Live:stop 即清掉尾区帧;再 print 全文进 scrollback(progressive commit)。
             try:
-                self._live.update(self._framed_render(self._text_buf))
-                self._live.refresh()
+                self._live.stop()
             except Exception:
                 pass
             finally:
-                try:
-                    self._live.stop()
-                except Exception:
-                    pass
                 self._live = None
-                self._text_buf = ""
+            if self._text_buf:
+                self.console.print(self._framed_render(self._text_buf))
+            self._text_buf = ""
         elif not self._pending_indent:
             self.console.file.write("\n")
             self.console.file.flush()
@@ -398,15 +400,16 @@ class StreamingAgentRenderer:
                     buf.append(ch)
             self.console.file.write("".join(buf)); self.console.file.flush()
             return
-        # tty:累积 + Live 重绘 markdown
+        # tty:累积 + Live 重绘(只显尾部)。auto_refresh=False:不开后台线程,
+        # 每 chunk 手动 refresh —— 与 thinking.py 一致,杜绝后台重绘 desync。
         if not self._text_open:
             self._text_open = True
             self._text_buf = ""
-            self._live = Live(console=self.console, refresh_per_second=12,
-                              transient=False, auto_refresh=True)
+            self._live = Live(console=self.console, transient=True,
+                              auto_refresh=False)
             self._live.start()
         self._text_buf += chunk
-        self._live.update(self._framed_render(self._text_buf))
+        self._live.update(self._active_frame(self._text_buf), refresh=True)
 
     def tool_notice(self, name: str, args_preview: str = "",
                     color: Optional[str] = None) -> None:

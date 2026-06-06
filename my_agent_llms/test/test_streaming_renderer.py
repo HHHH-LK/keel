@@ -53,3 +53,27 @@ def test_tail_cap_floor_is_three():
     t = Text("\n".join(f"l{i}" for i in range(10)))
     capped = chat_view._tail_cap(t, height=1)             # cap = max(3, -5) = 3
     assert capped.plain.split("\n") == ["l7", "l8", "l9"]
+
+
+def test_close_commits_full_text_even_when_live_capped():
+    # 终端高度小,活跃段很长 → live 只显尾部,但 close 必须把全文落进 scrollback
+    con = Console(file=io.StringIO(), force_terminal=True, width=80, height=8)
+    r = chat_view.StreamingAgentRenderer(con)
+    long_text = "\n".join(f"row{i}" for i in range(30))
+    r.text_chunk(long_text)
+    r._close_text()
+    out = con.file.getvalue()
+    # 全文每一行都应出现在最终 scrollback 输出里(含被 live 截掉的早期行)
+    assert "row0" in out
+    assert "row29" in out
+
+
+def test_active_frame_is_capped_during_stream():
+    con = Console(file=io.StringIO(), force_terminal=True, width=80, height=8)
+    r = chat_view.StreamingAgentRenderer(con)
+    frame = r._active_frame("\n".join(f"row{i}" for i in range(30)))
+    plain = frame.plain
+    # height=8 → cap=max(3,8-6)=2;_framed_render 带 ⏺/缩进/markdown,故用宽松断言:
+    assert "row29" in plain                    # 尾部保留
+    assert "row0" not in plain                 # 早期行被截
+    assert len(plain.split("\n")) <= 4         # 高度受限(cap=2,留余量防 markdown 末空行)
