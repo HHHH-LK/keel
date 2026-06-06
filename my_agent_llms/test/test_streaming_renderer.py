@@ -1,5 +1,6 @@
 """StreamingAgentRenderer:tty 走 Live markdown,非 tty 退回 raw。"""
 import io
+import re
 from rich.console import Console
 from my_agent_llms.cli import chat_view
 
@@ -80,3 +81,26 @@ def test_active_frame_is_capped_during_stream():
     assert "row29" in plain                    # 尾部保留
     assert "row0" not in plain                 # 早期行被截
     assert len(plain.split("\n")) <= 4         # 高度受限(cap=2,留余量防 markdown 末空行)
+
+
+def test_reasoning_chunk_commits_dim_thinking_block():
+    con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
+    r = chat_view.StreamingAgentRenderer(con)
+    r.reasoning_chunk("我先分析一下\n第二行思考\n")
+    r.text_chunk("正式回答")     # 切到 text 段,应先 commit reasoning
+    r.close()
+    out = re.sub(r"\x1b\[[0-9;]*m", "", con.file.getvalue())
+    assert "我先分析一下" in out
+    assert "正式回答" in out
+    assert "✻" in out
+
+
+def test_reasoning_folds_when_long():
+    con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
+    r = chat_view.StreamingAgentRenderer(con)
+    r.reasoning_chunk("\n".join(f"思考{i}" for i in range(10)))
+    r.close()
+    out = re.sub(r"\x1b\[[0-9;]*m", "", con.file.getvalue())
+    assert "思考0" in out
+    assert "+7 行" in out or "+7 lines" in out   # 首3行 + 余7
+    assert "思考9" not in out

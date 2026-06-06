@@ -57,6 +57,23 @@ def _tail_cap(text_obj: Text, height: int, reserve: int = 6) -> Text:
     return out
 
 
+def _render_thinking(text: str, fold: int = 3) -> Text:
+    """思考块:✻ 起头,暗色;超过 fold 行折叠为 '首 fold 行 + … +N 行(思考)'。"""
+    lines = text.rstrip("\n").split("\n")
+    hidden = max(0, len(lines) - fold)
+    shown = lines[:fold]
+    out = Text()
+    out.append("✻ ", style=theme.DIM)
+    for i, ln in enumerate(shown):
+        if i:
+            out.append("\n  ")
+        out.append(ln, style=theme.DIM)
+    if hidden:
+        out.append("\n  ")
+        out.append(f"… +{hidden} 行(思考)", style=theme.DIM)
+    return out
+
+
 def _now_hhmm() -> str:
     return datetime.now().strftime("%H:%M")
 
@@ -376,6 +393,8 @@ class StreamingAgentRenderer:
         # 显式传入 (e.g. theme.ERR for 拒绝) → 强制用这个色
         self._pending: List[tuple[str, str, Optional[str]]] = []
         self._text_buf = ""
+        self._reason_open = False
+        self._reason_buf = ""
         self._live: Optional[Live] = None
         self._use_live = bool(getattr(self.console, "is_terminal", False))
 
@@ -393,17 +412,20 @@ class StreamingAgentRenderer:
         body = render_markdown(text, width)
         return _step_lines_from_text(body, theme.DEFAULT)
 
+    def _active_height(self) -> int:
+        return getattr(getattr(self.console, "size", None), "height", 24) or 24
+
     def _active_frame(self, text: str) -> Text:
         """活跃段的 live 帧:整段渲染后只取尾部若干行,防 Live 超终端高度。
         全文由 _close_text 落 scrollback,这里截断不丢内容。"""
-        height = getattr(getattr(self.console, "size", None), "height", 24) or 24
-        return _tail_cap(self._framed_render(text), height)
+        return _tail_cap(self._framed_render(text), self._active_height())
 
     def _close_text(self) -> None:
-        """text segment 切段(progressive commit)。
+        """text/reasoning segment 切段(progressive commit)。
         tty:stop 掉 transient Live(清尾区帧)→ 把全文 print 进 scrollback;
-        非 tty:确保当前一行已结束,后续非 text 输出从行首开始。"""
-        if not self._text_open:
+        非 tty:确保当前一行已结束,后续非 text 输出从行首开始。
+        reasoning 段:折叠暗色块 commit;text 段:_framed_render commit。"""
+        if not self._text_open and not self._reason_open:
             return
         if self._live is not None:
             # transient Live:stop 即清掉尾区帧;再 print 全文进 scrollback(progressive commit)。
@@ -413,14 +435,41 @@ class StreamingAgentRenderer:
                 pass
             finally:
                 self._live = None
-            buf, self._text_buf = self._text_buf, ""
-            if buf:
-                self.console.print(self._framed_render(buf))
+            if self._reason_open:
+                buf, self._reason_buf = self._reason_buf, ""
+                self._reason_open = False
+                if buf.strip():
+                    self.console.print(_render_thinking(buf))    # 折叠暗色块
+            else:
+                buf, self._text_buf = self._text_buf, ""
+                if buf:
+                    self.console.print(self._framed_render(buf))
         elif not self._pending_indent:
             self.console.file.write("\n")
             self.console.file.flush()
         self._text_open = False
+        self._reason_open = False
         self._pending_indent = False
+
+    def reasoning_chunk(self, chunk: str) -> None:
+        if not chunk:
+            return
+        self._ensure_started()
+        self._close_text()               # 与 text 段互斥
+        if not self._use_live:
+            self.console.print(chunk, style=theme.DIM, end="")
+            self.console.file.flush()
+            self._reason_open = True
+            return
+        if not self._reason_open:
+            self._reason_open = True
+            self._reason_buf = ""
+            self._live = Live(console=self.console, transient=True, auto_refresh=False)
+            self._live.start()
+        self._reason_buf += chunk
+        # 流式期间尾区渲染:仅尾部防超高;fold 与 commit 一致防止 StringIO 测试泄漏
+        self._live.update(_tail_cap(_render_thinking(self._reason_buf),
+                                    self._active_height()), refresh=True)
 
     def _flush_tool_notice(self, result_color: Optional[str] = None) -> None:
         """把**队首** pending notice 打到屏上(FIFO,跟 Phase C 结果上报顺序一致)。
