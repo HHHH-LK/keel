@@ -350,7 +350,9 @@ class StreamingAgentRenderer:
         return _tail_cap(self._framed_render(text), height)
 
     def _close_text(self) -> None:
-        """text segment 切段:确保当前一行已结束,后续非 text 输出从行首开始。"""
+        """text segment 切段(progressive commit)。
+        tty:stop 掉 transient Live(清尾区帧)→ 把全文 print 进 scrollback;
+        非 tty:确保当前一行已结束,后续非 text 输出从行首开始。"""
         if not self._text_open:
             return
         if self._live is not None:
