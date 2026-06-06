@@ -110,6 +110,8 @@ class MyFunctionCallAgent(Agent):
         _verify_round = 0
         _verify_history: list = []
         _verify_best = None
+        # 默认 0:__new__ 建的测试 agent 无此属性 → 不 replan,保持旧行为
+        _replan_budget = getattr(self, "replan_budget", 0)
         # 注意(Phase 1 已知限制):验证重试轮与工具轮共享 self.max_steps 预算。
         # 工具用得多时验证轮会被挤压,可能到不了 convergence_judge.hard_cap。Phase 2 再拆独立预算。
         for _ in range(self.max_steps):
@@ -149,6 +151,14 @@ class MyFunctionCallAgent(Agent):
                     _verify_round, _verify_history, _verify_best)
                 _verify_best = gate["best"]
                 _verify_round += 1
+                # STUCK/OSCILLATING(原地打转)且还有预算 → 换思路重新规划,而非放弃
+                if gate["needs_replan"] and _replan_budget > 0:
+                    _replan_budget -= 1
+                    plan = self._make_plan(input_text, gate["feedback"])
+                    messages.append({"role": "user", "content":
+                        f"⚠️ 之前的做法卡住了。换个思路,按以下新计划重做:\n{plan}"})
+                    _verify_history.clear()   # 换思路 → 残差趋势重新起算,旧 STUCK 历史不再拖累
+                    continue
                 if gate["stop"]:
                     final_response = gate["best"].result
                     break
