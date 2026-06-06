@@ -290,6 +290,10 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     registry.register_tool(GrepTool(ws))
     registry.register_tool(GlobTool(ws))
 
+    from my_agent_llms.planning.todo import TodoStore, WriteTodoTool
+    todo_store = TodoStore()
+    registry.register_tool(WriteTodoTool(todo_store))
+
     try:
         agent = MyFunctionCallAgent(
             name="伙伴",
@@ -314,11 +318,16 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 "3. Edit / Write 调用时框架会同步弹审批框给用户(显示 diff)。"
                 "你不用追问'要不要确认',直接调即可。用户若拒绝,你会收到"
                 " \"用户拒绝了对 X 的调用\",请结合上下文道歉/改方案/继续聊。\n"
+                "\n## 任务规划\n"
+                "简单/单步任务直接做,不要用 write_todo。"
+                "复杂多步任务(多文件/多步骤/易遗漏)先用 write_todo 列分步计划,"
+                "每完成一步就更新其 status。\n"
             ),
             memory_config=memory_config,
             max_steps=1000,
             workspace=ws,
             enable_verify=True,
+            todo_store=todo_store,
         )
     except Exception as exc:
         help_view.print_error(console, f"Agent 构造失败: {exc}")

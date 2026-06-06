@@ -11,3 +11,14 @@ def test_build_agent_injects_workspace():
 def test_build_agent_enables_verify():
     src = inspect.getsource(app.build_agent)
     assert "enable_verify=True" in src
+
+
+def test_build_agent_wires_todo():
+    src = inspect.getsource(app.build_agent)
+    assert "WriteTodoTool" in src
+    assert "todo_store=" in src
+
+
+def test_build_agent_prompt_mentions_todo():
+    src = inspect.getsource(app.build_agent)
+    assert "write_todo" in src      # system prompt 引导里提到
