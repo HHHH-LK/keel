@@ -74,7 +74,7 @@ def _make_agent(monkeypatch, responses, *, enable_verify, spec, tools=None, work
         storage_dir=Path(tempfile.mkdtemp()), cold_backend="none", vector_backend="memory"))
     agent._run_response_hooks = lambda inp, resp, msgs: resp
     agent._apply_honesty_contract = lambda p: p or ""
-    agent._finalize_turn = lambda inp, resp: None
+    agent._finalize_turn = lambda inp, resp, *, task_turn=False: None
 
     # 验证组件
     agent.enable_verify = enable_verify
@@ -249,3 +249,36 @@ def test_verify_workspace_hard_oracle_can_fail(monkeypatch, tmp_path):
     out = agent.run("t")
     # status=bad ≠ ok → 残差恒>0 → 永不收敛 → 返回 best(残差最小那轮的文本)
     assert out in {"尝试1", "尝试2"}
+
+
+def test_task_turn_passed_to_memory_on_tool_use(monkeypatch):
+    """用过工具的轮 → _finalize_turn(task_turn=True)。"""
+    spec = CheckSpec(task="t", checks=[Check(id="a", type="string_contains", params={"s": "ok"})])
+    agent = _make_agent(
+        monkeypatch,
+        [_tool_call_response("noop"), _text_response("ok done")],
+        enable_verify=False, spec=spec, tools=[_StubTool("noop")])
+    agent._finalize_turn = MyFunctionCallAgent._finalize_turn.__get__(agent)
+    captured = {}
+    orig = agent._finalize_turn
+    def spy(user_input, response, *, task_turn=False):
+        captured["task_turn"] = task_turn
+        return orig(user_input, response, task_turn=task_turn)
+    monkeypatch.setattr(agent, "_finalize_turn", spy)
+    agent.run("做点事")
+    assert captured["task_turn"] is True
+
+
+def test_no_tool_turn_passes_task_turn_false(monkeypatch):
+    spec = CheckSpec(task="t", checks=[Check(id="a", type="string_contains", params={"s": "ok"})])
+    agent = _make_agent(monkeypatch, [_text_response("你好")],
+                        enable_verify=False, spec=spec)
+    agent._finalize_turn = MyFunctionCallAgent._finalize_turn.__get__(agent)
+    captured = {}
+    orig = agent._finalize_turn
+    def spy(user_input, response, *, task_turn=False):
+        captured["task_turn"] = task_turn
+        return orig(user_input, response, task_turn=task_turn)
+    monkeypatch.setattr(agent, "_finalize_turn", spy)
+    agent.run("你好")
+    assert captured["task_turn"] is False

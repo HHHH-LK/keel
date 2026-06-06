@@ -241,7 +241,7 @@ class MyFunctionCallAgent(Agent):
         # TDD 子运行(_in_tdd)期间不在这里写 memory:由顶层 _run_tdd 统一补记一次,
         # 避免把实现阶段的子提示词("请写实现…")当成用户输入污染记忆。
         if not getattr(self, "_in_tdd", False):
-            self._finalize_turn(input_text, final_response)
+            self._finalize_turn(input_text, final_response, task_turn=tool_call_count > 0)
         self.last_tool_call_count = tool_call_count
         logger.debug(f"{self.name} 响应完成")
         return final_response
@@ -311,7 +311,7 @@ class MyFunctionCallAgent(Agent):
             self._in_tdd = False
             self.enable_verify = saved_verify
         # 顶层补记一次 memory:原始任务 ↔ 最终结果(嵌套子 run 已被抑制 finalize)。
-        self._finalize_turn(input_text, message)
+        self._finalize_turn(input_text, message, task_turn=True)
         return message
 
     def _tdd_implement(self, task: str, test_paths, feedback: str) -> None:

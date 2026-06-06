@@ -61,11 +61,12 @@ class Agent(ABC):
             for it in self.memory.working.items()
         ]
 
-    def add_message(self, message: Message) -> None:
+    def add_message(self, message: Message, *, task_turn: bool = False) -> None:
         self.memory.write(
             message.content,
             role=message.role,
             metadata=message.metadata or {},
+            task_turn=task_turn,
         )
 
     def get_history(self) -> List[Message]:
@@ -105,13 +106,14 @@ class Agent(ABC):
         return response
 
     # ── 每轮结束的统一收尾 ────────────────────────────────
-    def _finalize_turn(self, user_input: str, response: str) -> None:
+    def _finalize_turn(self, user_input: str, response: str, *,
+                       task_turn: bool = False) -> None:
         """子类 run() 末尾调用：写入历史 + 触发热度升降级。
 
         把"保存 user/assistant 消息"与"调 tick()"打包，避免每个 Agent
         都重复写一遍，也保证不会漏调 tick。
         """
-        self.add_message(Message(user_input, "user"))
+        self.add_message(Message(user_input, "user"), task_turn=task_turn)
         # 空响应不写入：避免 thinking 模型耗尽 max_tokens 时污染历史，
         # 进而让下一轮 LLM 看到自己上轮"空消息"而产生奇怪的道歉行为。
         if response and response.strip():
