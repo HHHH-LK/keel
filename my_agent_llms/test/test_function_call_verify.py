@@ -201,3 +201,51 @@ def test_verify_skipped_when_no_tool_used(monkeypatch):
     out = agent.run("t")
     assert out == "纯闲聊没有那个词"   # 没用工具 → 不验证,首答原样返回
     assert called["gen"] is False     # SpecGenerator 未被调用
+
+
+def test_verify_workspace_hard_oracle_fires(monkeypatch, tmp_path):
+    """工具写出 report.json,field_equals 读回校验 status==ok → 残差0 收敛。
+    证明注入的 workspace 让硬 oracle 真正生效。"""
+    import json
+    from my_agent_llms.workspace.workspace import Workspace
+    ws = Workspace(root=tmp_path)
+    report = tmp_path / "report.json"
+    writer = _StubTool("make_report", write_path=str(report),
+                       write_content=json.dumps({"status": "ok"}),
+                       side_effect_free=False)
+    spec = CheckSpec(task="t", checks=[
+        Check(id="a", type="field_equals",
+              params={"path": "report.json", "key": "status", "value": "ok"},
+              weight=10.0, is_hard_oracle=True)])
+    agent = _make_agent(
+        monkeypatch,
+        [_tool_call_response("make_report"), _text_response("报告已生成")],
+        enable_verify=True, spec=spec, tools=[writer], workspace=ws)
+    out = agent.run("t")
+    assert out == "报告已生成"     # field_equals 读回文件命中 → 残差0 → 收敛返回该答
+
+
+def test_verify_workspace_hard_oracle_can_fail(monkeypatch, tmp_path):
+    """文件 status=bad 但 spec 要 ok → field_equals 始终失败 → 不收敛,返回 best(文本)。
+    证明硬 oracle 真在读文件求值(不是被无 workspace 静默判过)。"""
+    import json
+    from my_agent_llms.workspace.workspace import Workspace
+    ws = Workspace(root=tmp_path)
+    report = tmp_path / "report.json"
+    writer = _StubTool("make_report", write_path=str(report),
+                       write_content=json.dumps({"status": "bad"}),
+                       side_effect_free=False)
+    spec = CheckSpec(task="t", checks=[
+        Check(id="a", type="field_equals",
+              params={"path": "report.json", "key": "status", "value": "ok"},
+              weight=10.0, is_hard_oracle=True)])
+    agent = _make_agent(
+        monkeypatch,
+        [_tool_call_response("make_report"),
+         _text_response("尝试1"), _text_response("尝试2")],
+        enable_verify=True, spec=spec, tools=[writer], workspace=ws)
+    agent.max_steps = 3
+    agent.convergence_judge = ConvergenceJudge(hard_cap=5, K=99)
+    out = agent.run("t")
+    # status=bad ≠ ok → 残差恒>0 → 永不收敛 → 返回 best(残差最小那轮的文本)
+    assert out in {"尝试1", "尝试2"}
