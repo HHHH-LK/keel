@@ -35,7 +35,7 @@ from my_agent_llms.cli import banner, chat_view, help_view, status_bar, theme
 from my_agent_llms.cli.permission import prompt_permission, TerminalNotInteractiveError
 from my_agent_llms.cli.permission_grants import PermissionGrants, decide
 from my_agent_llms.cli.console import console
-from my_agent_llms.cli.prompt import build_session, prompt_html
+from my_agent_llms.cli.prompt import build_session
 from my_agent_llms.cli.thinking import ThinkingSpinner
 
 from my_agent_llms.agents.function_call_agent import MyFunctionCallAgent
@@ -829,10 +829,7 @@ class ChatCLI:
             l1_max_tokens=4000,
             multiline=self.multiline,
         )
-        return self.session.prompt(
-            prompt_html(self.multiline),
-            multiline=self.multiline,
-        ).strip()
+        return self.session.prompt(multiline=self.multiline).strip()
 
     def handle_command(self, line: str) -> bool:
         if not line.startswith("/"):
