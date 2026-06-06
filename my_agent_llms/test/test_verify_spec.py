@@ -54,3 +54,12 @@ def test_spec_generator_falls_back_on_llm_error():
     spec = gen.generate("随便", tools=[])
     assert len(spec.checks) >= 1
     assert all(c.is_hard_oracle for c in spec.checks)
+
+
+def test_spec_generator_skips_malformed_keeps_valid():
+    reply = '{"checks": [{"type": "string_contains", "params": {"s": "ok"}}, {"bad": true}]}'
+    gen = SpecGenerator(_fake_llm(reply))
+    spec = gen.generate("t", tools=[])
+    assert len(spec.checks) == 1
+    assert spec.checks[0].type == "string_contains"
+    assert spec.checks[0].id == "c0"   # id 缺省 → f"c{i}"

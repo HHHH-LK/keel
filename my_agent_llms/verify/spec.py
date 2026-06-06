@@ -59,6 +59,7 @@ def _extract_json(text: str) -> Optional[dict]:
     """从 LLM 回复里抽出第一个 JSON 对象。容忍 ```json fenced``` 包裹。"""
     if not text:
         return None
+    # ```json fence``` 标记不含花括号,故正则从首个 { 到末个 } 自然跳过它
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
         return None
