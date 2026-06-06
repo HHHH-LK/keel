@@ -139,6 +139,9 @@ class BoxPromptSession:
             style=_STYLE,
             full_screen=False,
             mouse_support=False,
+            # 提交后擦掉圆角框(否则每回合在 scrollback 留一个框)。
+            # 擦除后由 app 层 render_user_input 把输入塌成一行 '❯ text' 回显。
+            erase_when_done=True,
         )
         text = app.run()
         if text and text.strip():

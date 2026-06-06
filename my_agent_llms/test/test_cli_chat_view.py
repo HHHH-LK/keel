@@ -214,3 +214,15 @@ def test_renderer_system_notice_closes_text_first():
     out = _capture_renderer(run)
     assert "回答中" in out
     assert "已中断" in out
+
+
+def test_render_user_input_clean_arrow_line():
+    out = _capture(chat_view.render_user_input, "你好")
+    assert "❯ 你好" in out
+    assert "┃" not in out          # 不是旧 bar 风
+    assert "you" not in out        # 无 header
+
+
+def test_render_user_input_empty_skipped():
+    out = _capture(chat_view.render_user_input, "   ")
+    assert out.strip() == ""

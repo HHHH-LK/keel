@@ -332,6 +332,22 @@ def render_user(console: Console, text: str) -> None:
     console.print(_bar_lines(text, theme.YOU, from_ansi=False))
 
 
+def render_user_input(console: Console, text: str) -> None:
+    """Claude Code 风:提交后把用户输入塌成一行 '❯ text' 留进 scrollback。
+    配合 prompt.py 的 erase_when_done=True(圆角框提交即擦)——框消失,这行留底。
+    多行输入续行缩进 2 格对齐。空输入不回显。"""
+    if not text.strip():
+        return
+    out = Text()
+    for i, line in enumerate(text.split("\n")):
+        if i == 0:
+            out.append("❯ ", style=theme.YOU)
+        else:
+            out.append("\n  ")
+        out.append(line)
+    console.print(out)
+
+
 def render_agent(console: Console, reply: str, *,
                  tools_used: int = 0, elapsed_seconds: float = 0.0) -> None:
     """Render an AI reply: ⏺ + 全量 markdown body (Claude Code 风格)。
@@ -455,7 +471,8 @@ class StreamingAgentRenderer:
         if not chunk:
             return
         self._ensure_started()
-        self._close_text()               # 与 text 段互斥
+        if self._text_open:              # 只在"从正文切到思考"时收尾正文段(对称于 text_chunk)
+            self._close_text()
         if not self._use_live:
             self.console.print(chunk, style=theme.DIM, end="")
             self.console.file.flush()

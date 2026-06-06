@@ -873,7 +873,9 @@ class ChatCLI:
         return True
 
     def chat_once(self, user_input: str) -> None:
-        # 用户输入已经在 ❯ 提示行上,不重复 echo (Claude Code 风格)
+        # 输入框(BoxPromptSession)提交即 erase_when_done 擦掉圆角框,
+        # 这里把输入塌成一行 '❯ text' 回显进 scrollback(Claude Code 风,不再每回合留框)
+        chat_view.render_user_input(console, user_input)
 
         if self.agent is None:
             chat_view.print_not_ready_hint(console)
