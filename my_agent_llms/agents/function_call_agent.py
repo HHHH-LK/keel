@@ -99,8 +99,14 @@ class MyFunctionCallAgent(Agent):
             on_tool_result: Optional[ToolResultCallback] = None,
             on_llm_done: Optional[LLMDoneCallback] = None,
             on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
+            should_cancel: Optional[Callable[[], bool]] = None,
             **kwargs) -> str:
-        """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。"""
+        """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。
+
+        should_cancel: 可选的取消信号函数。每次循环顶部 + 流式逐 chunk 均检查。
+        返回 True 时立即中断,返回 "(已被用户中断 esc)" 标记字符串。
+        """
+        _cancel = should_cancel or (lambda: False)
         _tdd = self._maybe_run_tdd(input_text)
         if _tdd is not None:
             return _tdd
@@ -125,12 +131,16 @@ class MyFunctionCallAgent(Agent):
         # 注意(Phase 1 已知限制):验证重试轮与工具轮共享 self.max_steps 预算。
         # 工具用得多时验证轮会被挤压,可能到不了 convergence_judge.hard_cap。Phase 2 再拆独立预算。
         for _ in range(self.max_steps):
+            if _cancel():
+                final_response = final_response or "(已被用户中断 esc)"
+                break
             self._refresh_todo_injection(messages)
             t_llm = time.monotonic()
             response = self._invoke_with_tools(
                 messages, tools, tool_choice,
                 on_text_chunk=on_text_chunk,
                 on_reasoning_chunk=on_reasoning_chunk,
+                should_cancel=_cancel,
                 **kwargs,
             )
             llm_elapsed = time.monotonic() - t_llm
@@ -210,6 +220,7 @@ class MyFunctionCallAgent(Agent):
                 messages, tools, "none",
                 on_text_chunk=on_text_chunk,
                 on_reasoning_chunk=on_reasoning_chunk,
+                should_cancel=_cancel,
                 **kwargs,
             )
             llm_elapsed = time.monotonic() - t_llm
@@ -483,11 +494,13 @@ class MyFunctionCallAgent(Agent):
                            tool_choice: Union[str, dict],
                            on_text_chunk: Optional[TextChunkCallback] = None,
                            on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
+                           should_cancel: Optional[Callable[[], bool]] = None,
                            **kwargs):
         client = getattr(self.llm, "client", None)
         if client is None:
             raise RuntimeError("MyLLM 客户端未初始化，无法执行函数调用。")
 
+        # NOTE: should_cancel is an explicit param and must NOT be in request_kwargs.
         request_kwargs = dict(kwargs)
         request_kwargs.setdefault("temperature", self.llm.temperature)
         if self.llm.max_tokens is not None:
@@ -501,7 +514,8 @@ class MyFunctionCallAgent(Agent):
             **request_kwargs,
         )
 
-        response = self._stream_chat_completion(client, base_request, on_text_chunk, on_reasoning_chunk)
+        response = self._stream_chat_completion(
+            client, base_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
 
         # 自救：撞 max_tokens 上限、content 又是空（thinking 模型把预算吃在
         # reasoning 阶段最常见的失败形态）→ 把预算翻倍重试一次。
@@ -517,7 +531,8 @@ class MyFunctionCallAgent(Agent):
                 "finish_reason=length 且响应为空，max_tokens %s→%s 重试",
                 current_budget, bumped_request["max_tokens"],
             )
-            response = self._stream_chat_completion(client, bumped_request, on_text_chunk, on_reasoning_chunk)
+            response = self._stream_chat_completion(
+                client, bumped_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
 
         return response
 
@@ -527,6 +542,7 @@ class MyFunctionCallAgent(Agent):
         base_request: Dict[str, Any],
         on_text_chunk: Optional[TextChunkCallback],
         on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
     ):
         """开 stream=True 调 chat.completions, 累积出与非流式等价的 response 对象。
 
@@ -535,6 +551,7 @@ class MyFunctionCallAgent(Agent):
           "thinking..." 指示);同时累积作为 content 为空时的兜底
         - tool_calls chunk → 按 index 累加 arguments JSON 片段
         - finish_reason 取最后一个非空值
+        - should_cancel: 每个 chunk 前检查;True 时中断流式读取(累积到当前为止)
 
         返回的 SimpleNamespace 跟原生 ChatCompletion 同形:
         response.choices[0].message.{content, tool_calls, reasoning_content}
@@ -554,6 +571,8 @@ class MyFunctionCallAgent(Agent):
 
         stream = client.chat.completions.create(**stream_request)
         for chunk in stream:
+            if should_cancel is not None and should_cancel():
+                break
             # usage 帧 (有的 provider 把它放在 choices 为空的最后一帧)
             chunk_usage = getattr(chunk, "usage", None)
             if chunk_usage is not None:
