@@ -26,10 +26,13 @@ from functools import partial
 from typing import Dict, Optional
 
 from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+from prompt_toolkit.layout.containers import (
+    ConditionalContainer, HSplit, VSplit, Window,
+)
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -211,7 +214,9 @@ class LiveSession:
 
     # ── app 构建 ─────────────────────────────────────────────
     def _build_app(self, queue: "asyncio.Queue[str]"):
-        ta = TextArea(multiline=False, wrap_lines=True,
+        # 单行输入:不折行(否则中文双宽字符很快撑到行尾,框被折成两行),
+        # 改为横向滚动,框稳定保持一行高。
+        ta = TextArea(multiline=False, wrap_lines=False,
                       prompt=HTML("<arrow>❯ </arrow>"))
         kb = KeyBindings()
 
@@ -247,17 +252,21 @@ class LiveSession:
             self.state["cancel"] = True
             event.app.exit()
 
-        active = Window(FormattedTextControl(self._active_fragments),
-                        wrap_lines=True, dont_extend_height=True,
-                        height=D(min=0, max=12))
+        # 活跃区:空闲时整窗隐藏(否则空内容仍占 1 行/重绘时高度抖动,看着像闪)。
+        active = ConditionalContainer(
+            content=Window(FormattedTextControl(self._active_fragments),
+                           wrap_lines=True, dont_extend_height=True,
+                           height=D(min=0, max=12)),
+            filter=Condition(lambda: bool(self._active[0])))
         status = Window(FormattedTextControl(self._status_fragments), height=1)
         fill = partial(Window, style="class:frame.border")
         top = VSplit([fill(width=1, height=1, char="╭"), fill(char="─"),
                       fill(width=1, height=1, char="╮")], height=1)
         bottom = VSplit([fill(width=1, height=1, char="╰"), fill(char="─"),
                          fill(width=1, height=1, char="╯")], height=1)
+        # 钉 height=1:跟 top/bottom 一致,否则两侧 │ 竖条会竖向撑高、把输入框抻成多行。
         middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
-                         Window(width=1), fill(width=1, char="│")])
+                         Window(width=1), fill(width=1, char="│")], height=1)
         root = HSplit([active, HSplit([top, middle, bottom]), status])
         style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
                                  "status": "gray"})
