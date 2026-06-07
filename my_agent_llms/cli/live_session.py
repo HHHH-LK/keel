@@ -70,6 +70,11 @@ def _render_approval_box(name: str, preview: str, sel: int, width: int) -> str:
     配色走简化版:灰边框 + cyan 一个强调色(选中项),diff 仍绿/红语义色。
     """
     preview = preview or ""
+    # 截断长 diff:否则框会撑到几十行,把下面的 1/2/3 选项挤出屏幕(用户看不到选项)。
+    _MAX_PREVIEW = 12
+    _plines = preview.split("\n")
+    if len(_plines) > _MAX_PREVIEW:
+        preview = "\n".join(_plines[:_MAX_PREVIEW]) + f"\n… +{len(_plines) - _MAX_PREVIEW} 行"
     body = (Syntax(preview, "diff", theme="ansi_dark", background_color="default")
             if _looks_like_diff(preview) else Text(preview))
 

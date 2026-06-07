@@ -30,6 +30,18 @@ def test_approval_box_shows_tool_name():
     assert "Edit" in raw
 
 
+def test_approval_box_caps_long_preview_so_options_stay_visible():
+    long_diff = "\n".join(f"+ line {i} of a big file" for i in range(40))
+    raw = _plain(ls._render_approval_box("Write", long_diff, sel=0, width=72))
+    lines = raw.split("\n")
+    # 长 diff 必须被截断,框不能撑到 40+ 行(否则选项被挤出屏幕 → 用户看不到)
+    assert len(lines) <= 24
+    # 三个选项仍在
+    assert "执行一次" in raw and "本会话" in raw and "拒绝" in raw
+    # 有截断标记
+    assert "…" in raw
+
+
 def test_approval_options_map_to_decisions():
     # 顺序:执行一次 / 本会话总是 / 拒绝 → ALLOW_ONCE / ALLOW_ALWAYS / DENY
     from my_agent_llms.cli.permission import PermissionDecision
