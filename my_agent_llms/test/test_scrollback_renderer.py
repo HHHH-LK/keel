@@ -61,3 +61,14 @@ def test_close_without_output_is_noop():
     r, commits, actives = _make()
     r.close()
     assert commits == []
+
+
+def test_tool_call_and_result_commit_lines():
+    r, commits, actives = _make()
+    r.text_chunk("准备读文件。")            # 先有正文残块
+    r.tool_call("ReadFile", "path=config.py")
+    r.tool_result("✅ 读取成功", elapsed_sec=0.2)
+    plains = "\n".join(c.plain for c in commits)
+    assert "准备读文件" in plains            # 工具前正文残块已被收尾 commit
+    assert "ReadFile(path=config.py)" in plains
+    assert "✅ 读取成功" in plains

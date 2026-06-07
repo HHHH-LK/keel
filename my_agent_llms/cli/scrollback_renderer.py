@@ -60,10 +60,8 @@ class ScrollbackRenderer:
         self._reason_buf += chunk
         self._set_active(self._reason_buf, "reasoning", False)
 
-    def close(self, *, tools_used: int = 0, elapsed_seconds: float = 0.0,
-              tokens_in: int = 0, tokens_out: int = 0) -> None:
-        if not self._opened:
-            return
+    def _flush_text(self) -> None:
+        """工具/收尾前:把当前 text 残块 commit 掉,让工具块从干净行开始。"""
         if self._mode == "reasoning":
             self._close_reasoning()
         buf, self._text_buf = self._text_buf, ""
@@ -71,6 +69,29 @@ class ScrollbackRenderer:
             self._commit(self._render_md(buf, with_dot=not self._dot))
             self._dot = True
         self._set_active("", "text", self._dot)
+
+    def tool_call(self, name: str, args_preview: str = "") -> None:
+        self._opened = True
+        self._flush_text()
+        self._pending = (name, args_preview)
+
+    def tool_result(self, text: str, *, elapsed_sec=None) -> None:
+        if not text:
+            return
+        name, preview = getattr(self, "_pending", ("", ""))
+        self._pending = ("", "")
+        color = chat_view._result_dot_color(text)
+        self._commit(chat_view._tool_notice_lines(name, preview, color))
+        body = text.rstrip("\n")
+        if elapsed_sec is not None:
+            body = f"{body}  ·  {chat_view._fmt_elapsed(elapsed_sec)}"
+        self._commit(chat_view._continuation_lines(body, color))
+
+    def close(self, *, tools_used: int = 0, elapsed_seconds: float = 0.0,
+              tokens_in: int = 0, tokens_out: int = 0) -> None:
+        if not self._opened:
+            return
+        self._flush_text()
         parts: list[str] = []
         if tools_used > 0:
             parts.append(f"{tools_used} tools")
