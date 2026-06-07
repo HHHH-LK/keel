@@ -42,6 +42,7 @@ from prompt_toolkit.widgets import TextArea
 from rich.console import Console as RichConsole
 from rich.text import Text
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -52,6 +53,39 @@ from .scrollback_renderer import ScrollbackRenderer
 
 _SPIN = ["✻", "✲", "✳", "✴", "✵", "✶", "✷"]
 _APPROVAL_TIMEOUT_S = 300        # 审批 Future 兜底超时(到点 → 安全拒绝,防工作线程永挂)
+
+# 审批选项(决定, 文案, 快捷键提示)—— 顺序即 ❯ 选择器上下导航顺序。
+_APPROVAL_OPTIONS = [
+    (PermissionDecision.ALLOW_ONCE,   "是,执行一次",        "1 / y / Enter"),
+    (PermissionDecision.ALLOW_ALWAYS, "是,本会话不再询问",   "2 / a"),
+    (PermissionDecision.DENY,         "否,拒绝",            "3 / n / Esc"),
+]
+
+
+def _render_approval_box(name: str, preview: str, sel: int, width: int) -> str:
+    """圆角框 + ❯ 选择器(从 _demo_approval 并进来):标题=工具名,框内 diff 预览 +
+    问题 + 三个带 ❯ 光标的选项。返回带 ANSI 的字符串(供 ptk 当 ANSI 片段渲染)。
+
+    配色走简化版:灰边框 + cyan 一个强调色(选中项),diff 仍绿/红语义色。
+    """
+    preview = preview or ""
+    body = (Syntax(preview, "diff", theme="ansi_dark", background_color="default")
+            if _looks_like_diff(preview) else Text(preview))
+
+    opts = Text()
+    opts.append("\n是否执行此操作?\n", style="bold")
+    for i, (_dec, label, hint) in enumerate(_APPROVAL_OPTIONS):
+        cur = i == sel
+        opts.append(" ❯ " if cur else "   ", style="cyan" if cur else "")
+        opts.append(f"{i + 1}. {label}", style="bold cyan" if cur else "")
+        opts.append(f"   [{hint}]\n", style=theme.DIM)
+
+    buf = io.StringIO()
+    con = RichConsole(file=buf, force_terminal=True, color_system="truecolor",
+                      width=width)
+    con.print(Panel(Group(body, opts), title=f"  {name}", title_align="left",
+                    border_style="grey50"))
+    return buf.getvalue().rstrip("\n")
 
 
 def _width() -> int:
@@ -150,23 +184,12 @@ class LiveSession:
 
     # ── 审批:应用内浮层(无嵌套 app)────────────────────────────
     def _approval_fragments(self):
-        """审批浮层内容:工具名 + preview(diff 高亮)+ 1/2/3 提示。空闲返回 []。"""
+        """审批浮层内容:圆角框 + ❯ 选择器。空闲返回 []。"""
         appr = self.state.get("approval")
         if not appr:
             return []
-        preview = appr["preview"] or ""
-        w = _width()
-        body = (Syntax(preview, "diff", theme="ansi_dark", background_color="default")
-                if _looks_like_diff(preview) else preview)
-        buf = io.StringIO()
-        con = RichConsole(file=buf, force_terminal=True,
-                          color_system="truecolor", width=w)
-        con.print(Panel(body, title=f"  {appr['name']}", title_align="left",
-                        border_style=theme.AGENT))
-        con.print(f"  是否允许?  [{theme.OK}]1.[/]允许一次  "
-                  f"[{theme.OK}]2.[/]本会话总是  [{theme.ERR}]3.[/]拒绝   "
-                  f"[{theme.DIM}](1/Enter=是 · 3/Esc=否)[/]")
-        return ANSI(buf.getvalue().rstrip("\n"))
+        sel = self.state.get("appr_sel", 0)
+        return ANSI(_render_approval_box(appr["name"], appr["preview"], sel, _width()))
 
     def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
         """工作线程调用:命中授权台账直接放行;否则在事件循环弹浮层,阻塞等 Future。"""
@@ -183,6 +206,7 @@ class LiveSession:
 
         def _show():
             self.state["approval"] = appr
+            self.state["appr_sel"] = 0       # 每次新审批从首项(执行一次)起选
             if self.app is not None:
                 self.app.invalidate()
 
@@ -323,9 +347,25 @@ class LiveSession:
         # ── 审批浮层按键(仅审批弹起时生效,eager 抢在输入框前拦截)──
         appr_on = Condition(lambda: self.state.get("approval") is not None)
 
+        @kb.add("up", filter=appr_on, eager=True)
+        def _(event):
+            n = len(_APPROVAL_OPTIONS)
+            self.state["appr_sel"] = (self.state.get("appr_sel", 0) - 1) % n
+            event.app.invalidate()
+
+        @kb.add("down", filter=appr_on, eager=True)
+        def _(event):
+            n = len(_APPROVAL_OPTIONS)
+            self.state["appr_sel"] = (self.state.get("appr_sel", 0) + 1) % n
+            event.app.invalidate()
+
+        @kb.add("enter", filter=appr_on, eager=True)
+        def _(event):
+            self._resolve_approval(
+                _APPROVAL_OPTIONS[self.state.get("appr_sel", 0)][0])
+
         @kb.add("1", filter=appr_on, eager=True)
         @kb.add("y", filter=appr_on, eager=True)
-        @kb.add("enter", filter=appr_on, eager=True)
         def _(event):
             self._resolve_approval(PermissionDecision.ALLOW_ONCE)
 
