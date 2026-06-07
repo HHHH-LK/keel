@@ -33,3 +33,14 @@ def test_close_reasoning_commits_thinking_block_on_text_chunk():
     assert any("我先想一下" in c.plain for c in commits)   # _close_reasoning 已 commit
     assert r._mode == "text"
     assert actives[-1][1] == "text"
+
+
+def test_reasoning_streams_active_then_commits_folded_on_switch():
+    r, commits, actives = _make()
+    r.reasoning_chunk("我先想\n第二行\n第三行\n第四行")
+    # 流式期间残块进 active,mode=reasoning
+    assert actives[-1][1] == "reasoning"
+    assert "我先想" in actives[-1][0]
+    r.text_chunk("正式回答")          # 切到正文 → 思考块折叠 commit
+    assert any("我先想" in c.plain and "✻" in c.plain for c in commits)
+    assert actives[-1][1] == "text"

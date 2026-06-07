@@ -52,6 +52,14 @@ class ScrollbackRenderer:
             self._text_buf = remainder
         self._set_active(self._text_buf, "text", self._dot)
 
+    def reasoning_chunk(self, chunk: str) -> None:
+        if not chunk:
+            return
+        self._opened = True
+        self._mode = "reasoning"
+        self._reason_buf += chunk
+        self._set_active(self._reason_buf, "reasoning", False)
+
     def _close_reasoning(self) -> None:
         # 收尾思考段总是切回 text 模式 —— 在此自洽复位,避免被 close()/tool_call 等
         # 独立调用后 _mode 残留 "reasoning"(否则下个 text_chunk 会误触二次 close)。
