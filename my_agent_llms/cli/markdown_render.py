@@ -43,7 +43,8 @@ def render_inline(text: str) -> Text:
     links: list[str] = []
 
     def _stash_link(m):
-        links.append(f"[{theme.ACCENT}]{_rich_escape(m.group(1))}[/]"
+        # Claude Code 风:链接文字用默认色(不强调),仅 URL 暗色
+        links.append(f"{_rich_escape(m.group(1))}"
                      f"[{theme.DIM}]({_rich_escape(m.group(2))})[/]")
         return f"\x00L{len(links) - 1}\x00"
 
@@ -106,7 +107,8 @@ def _render_code_block(code: str, lang: str, width: int) -> Text:
 
 
 def _render_header(hashes: str, body: str) -> Text:
-    return Text(body.strip(), style=f"bold {theme.ACCENT}")
+    # Claude Code 风:标题只 bold,不上强调色(去视觉疲劳)
+    return Text(body.strip(), style="bold")
 
 
 def _render_hr() -> Text:

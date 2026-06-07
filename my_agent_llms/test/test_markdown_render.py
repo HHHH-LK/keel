@@ -30,12 +30,26 @@ def test_lowercase_english_link_not_broken():
     assert "click here" in p
     assert "[" not in p and "]" not in p          # 不露 \[ 或 markup tag
     assert "bright_magenta" not in p              # 不露字面 style 名
-    assert any("magenta" in str(s.style).lower() for s in r.spans)  # 链接文字着色
+
+
+def test_link_text_default_url_dim_no_accent():
+    # 像 Claude Code:链接文字用默认色(不再亮品红),URL 暗色
+    r = render_markdown("见 [文档](http://x.com)", 80)
+    assert "文档" in r.plain and "http://x.com" in r.plain
+    assert not any("magenta" in str(s.style).lower() for s in r.spans)  # 文字去品红
+    assert any("bright_black" in str(s.style).lower() for s in r.spans)  # URL 仍暗色
 
 
 def test_header_drops_hashes():
     p = _plain("## 标题二")
     assert p.strip().startswith("标题二") and "#" not in p
+
+
+def test_header_is_bold_without_accent_color():
+    # 像 Claude Code:标题只 bold,去掉亮品红强调色
+    r = render_markdown("## 标题二", 80)
+    assert any("bold" in str(s.style) for s in r.spans)
+    assert not any("magenta" in str(s.style).lower() for s in r.spans)
 
 
 def test_bullet_list_uses_dot():
