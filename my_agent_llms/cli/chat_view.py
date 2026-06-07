@@ -158,15 +158,18 @@ def _step_lines(text_or_ansi: str, dot_color: str, *,
 
 
 def _result_dot_color(text: str) -> str:
-    """工具结果首字符决定 ⏺ 颜色:✅=绿,❌/拒绝=红,其它=DIM。"""
+    """工具结果 ⏺ 颜色(Claude Code 风:完成即绿,出错才红)。
+
+    出错信号:agent 把工具异常包成 '❌ 工具 … 执行异常'、拒绝包成含'拒绝'的串
+    (见 function_call_agent),故 ❌/拒绝 → 红;其余(含普通成功输出,不要求 ✅
+    前缀)→ 绿。空结果也按完成算绿。
+    """
     if not text:
-        return theme.DIM
-    stripped = text.lstrip()
-    if stripped.startswith("✅"):
         return theme.OK
+    stripped = text.lstrip()
     if stripped.startswith("❌") or "拒绝" in stripped:
         return theme.ERR
-    return theme.DIM
+    return theme.OK
 
 
 def _continuation_lines(text: str, color: str, *, more: int = 0) -> Text:

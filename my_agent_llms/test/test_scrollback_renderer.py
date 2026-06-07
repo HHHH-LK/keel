@@ -72,3 +72,23 @@ def test_tool_call_and_result_commit_lines():
     assert "准备读文件" in plains            # 工具前正文残块已被收尾 commit
     assert "ReadFile(path=config.py)" in plains
     assert "✅ 读取成功" in plains
+
+
+def test_tool_success_dot_is_green():
+    # 工具成功(普通结果,非 ✅ 开头)→ ⏺ 应绿色(像 Claude Code 默认完成=绿)
+    from my_agent_llms.cli import theme
+    r, commits, actives = _make()
+    r.tool_call("EditFile", "config.py")
+    r.tool_result("已写入 3 行")
+    notice = commits[0]                     # ⏺ EditFile(...)
+    assert any(theme.OK in str(s.style) for s in notice.spans)
+
+
+def test_tool_error_dot_is_red():
+    # 工具出错(agent 用 ❌ 包裹)→ ⏺ 应红色
+    from my_agent_llms.cli import theme
+    r, commits, actives = _make()
+    r.tool_call("EditFile", "config.py")
+    r.tool_result("❌ 工具 'EditFile' 执行异常: boom")
+    notice = commits[0]
+    assert any(theme.ERR in str(s.style) for s in notice.spans)
