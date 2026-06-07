@@ -118,9 +118,19 @@ def _fmt_tokens(n: int) -> str:
 
 
 def _preview(args: Dict) -> str:
-    """工具参数 → 'k=v, k=v' 预览(取前 3 个)。"""
+    """工具参数 → 'k=v, k=v' 预览(取前 3 个)。
+
+    每个值折成单行 + 截到 40 字 —— 否则像 Write(content=整篇文件) 会把全文倒进
+    ⏺ 工具行。完整内容由审批框/diff 渲染负责,这里只给一眼概览。
+    """
     try:
-        return ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
+        parts = []
+        for k, v in list(args.items())[:3]:
+            s = " ".join(str(v).split())          # 折叠换行/多空白成单行
+            if len(s) > 40:
+                s = s[:40] + "…"
+            parts.append(f"{k}={s}")
+        return ", ".join(parts)
     except Exception:
         return ""
 

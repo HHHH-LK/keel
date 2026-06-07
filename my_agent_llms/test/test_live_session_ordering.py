@@ -45,6 +45,20 @@ def test_commit_then_set_active_preserve_order_on_loop():
     assert names[0] == "_emit_scrollback"
 
 
+def test_preview_truncates_long_values():
+    from my_agent_llms.cli.live_session import _preview
+    p = _preview({"path": "LICENSE", "content": "M" * 200})
+    assert "LICENSE" in p
+    assert len(p) <= 120          # 不再把整篇文件内容塞进 ⏺ 工具行
+    assert "…" in p
+
+
+def test_preview_collapses_newlines_in_values():
+    from my_agent_llms.cli.live_session import _preview
+    p = _preview({"content": "第一行\n第二行\n第三行"})
+    assert "\n" not in p          # 多行折成单行,不撑高工具行
+
+
 def test_status_busy_shows_dynamic_activity():
     sess = LiveSession.__new__(LiveSession)
     sess.state = {"busy": True, "spin": 0, "activity": "调用 Read"}
