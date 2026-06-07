@@ -45,6 +45,28 @@ def test_commit_then_set_active_preserve_order_on_loop():
     assert names[0] == "_emit_scrollback"
 
 
+def test_status_busy_shows_dynamic_activity():
+    sess = LiveSession.__new__(LiveSession)
+    sess.state = {"busy": True, "spin": 0, "activity": "调用 Read"}
+    text = "".join(t for _, t in sess._status_fragments())
+    assert "调用 Read" in text          # 随 agent 当前动作变
+    assert "esc" in text                # 仍提示可中断
+
+
+def test_status_busy_falls_back_when_no_activity():
+    sess = LiveSession.__new__(LiveSession)
+    sess.state = {"busy": True, "spin": 0, "activity": ""}
+    text = "".join(t for _, t in sess._status_fragments())
+    assert "生成中" in text             # 没有具体动作时回退到"生成中"
+
+
+def test_status_idle_shows_ready():
+    sess = LiveSession.__new__(LiveSession)
+    sess.state = {"busy": False, "spin": 0, "activity": ""}
+    text = "".join(t for _, t in sess._status_fragments())
+    assert "就绪" in text
+
+
 def test_set_active_defers_state_mutation_to_loop():
     sess = _bare_session()
     sess._set_active("残块", "text", True)

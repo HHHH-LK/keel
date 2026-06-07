@@ -126,6 +126,7 @@ class LiveSession:
     def __init__(self, cli):
         self.cli = cli                       # ChatCLI(持 self.agent / self.grants)
         self.state = {"busy": False, "spin": 0, "cancel": False,
+                      "activity": "",              # 状态行动态文案(思考/调用工具/撰写)
                       "cwd": _short_cwd(),         # 底部信息栏:当前目录
                       "l1_tokens": 0,              # 当前 L1 上下文长度(每轮末刷新)
                       "sess_in": 0, "sess_out": 0}  # 本会话累计 token
@@ -194,7 +195,9 @@ class LiveSession:
 
     def _status_fragments(self):
         if self.state["busy"]:
-            head = f"{_SPIN[self.state['spin'] % len(_SPIN)]} 生成中…  (esc 中断)"
+            spin = _SPIN[self.state["spin"] % len(_SPIN)]
+            act = self.state.get("activity") or "生成中"   # 随 agent 当前动作动态变
+            head = f"{spin} {act}…  (esc 中断)"
         else:
             head = "● 就绪"
         return [("class:status", f"  {head}")]
@@ -287,15 +290,31 @@ class LiveSession:
             tok["in"] += pt or 0
             tok["out"] += ct or 0
 
+        # 回调包一层:在转给渲染器的同时刷新状态行的动态文案(思考/调用工具/撰写)。
+        def _on_text(t):
+            self.state["activity"] = "撰写回复"
+            r.text_chunk(t)
+
+        def _on_reason(t):
+            self.state["activity"] = "思考中"
+            r.reasoning_chunk(t)
+
+        def _on_tcall(n, a):
+            self.state["activity"] = f"调用 {n}"
+            r.tool_call(n, _preview(a), self._is_read_only(n))
+
+        def _on_tresult(n, res, el):
+            r.tool_result(res, name=n, read_only=self._is_read_only(n),
+                          elapsed_sec=el)
+            self.state["activity"] = "生成中"
+
         try:
             self.cli.agent.run(
                 user_input,
-                on_text_chunk=r.text_chunk,
-                on_reasoning_chunk=r.reasoning_chunk,
-                on_tool_call=lambda n, a: r.tool_call(n, _preview(a),
-                                                      self._is_read_only(n)),
-                on_tool_result=lambda n, res, el: r.tool_result(
-                    res, name=n, read_only=self._is_read_only(n), elapsed_sec=el),
+                on_text_chunk=_on_text,
+                on_reasoning_chunk=_on_reason,
+                on_tool_call=_on_tcall,
+                on_tool_result=_on_tresult,
                 on_permission_request=self._on_permission,
                 on_llm_done=on_llm_done,
                 should_cancel=lambda: self.state["cancel"],
@@ -319,6 +338,7 @@ class LiveSession:
             self.state["l1_tokens"] = self.cli.agent.memory.stats().get("l1_tokens", 0)
         except Exception:
             pass
+        self.state["activity"] = ""        # 收尾清空动态文案 → 回到 ● 就绪
         self.state["busy"] = False
         if self.app is not None:
             self.app.invalidate()
@@ -429,6 +449,7 @@ class LiveSession:
                            height=D(min=0, max=12)),
             filter=Condition(lambda: bool(self._active[0])))
         status = Window(FormattedTextControl(self._status_fragments), height=1)
+        spacer = Window(height=1)        # 状态行与上方对话之间留一行空隙(别太贴)
         info = Window(FormattedTextControl(self._info_bar_fragments), height=1)
         # 审批浮层:仅审批弹起时显示,在输入框上方
         approval = ConditionalContainer(
@@ -444,7 +465,8 @@ class LiveSession:
         middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
                          Window(width=1), fill(width=1, char="│")], height=1)
         # 审批浮层在最上,生成中状态行在框上方,信息栏在框下方。
-        root = HSplit([active, approval, status, HSplit([top, middle, bottom]), info])
+        root = HSplit([active, approval, spacer, status,
+                       HSplit([top, middle, bottom]), info])
         style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
                                  "status": "gray", "infobar": "#666666"})
         return Application(layout=Layout(root, focused_element=ta),
