@@ -273,6 +273,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     from my_agent_llms.tools.builtin.list_dir import ListDir
     from my_agent_llms.tools.builtin.grep import GrepTool
     from my_agent_llms.tools.builtin.glob import GlobTool
+    from my_agent_llms.tools.builtin.bash import BashTool
 
     try:
         ws = Workspace(cfg.get("workspace"))
@@ -289,6 +290,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
     registry.register_tool(ListDir(ws))
     registry.register_tool(GrepTool(ws))
     registry.register_tool(GlobTool(ws))
+    registry.register_tool(BashTool(ws))
 
     from my_agent_llms.planning.todo import TodoStore, WriteTodoTool
     todo_store = TodoStore()

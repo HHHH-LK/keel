@@ -420,8 +420,17 @@ class MyFunctionCallAgent(Agent):
                     "result": None, "elapsed": 0.0, "execute": True, "report": True}
 
             tool_obj = self.tool_registry.get_tool(name)
+            # 审批判定:工具若提供 approval_required_for(args) 则按命令内容动态决定
+            # (如 Bash 只对危险命令弹审批);否则回退静态 requires_approval。
+            _checker = getattr(tool_obj, "approval_required_for", None)
+            try:
+                _needs_approval = (bool(_checker(args)) if _checker is not None
+                                   else bool(getattr(tool_obj, "requires_approval", False)))
+            except Exception:
+                logger.exception("approval_required_for 异常,回退 requires_approval")
+                _needs_approval = bool(getattr(tool_obj, "requires_approval", False))
             if (tool_obj is not None
-                    and getattr(tool_obj, "requires_approval", False)
+                    and _needs_approval
                     and on_permission_request is not None):
                 try:
                     preview = tool_obj.preview_for_approval(args)
