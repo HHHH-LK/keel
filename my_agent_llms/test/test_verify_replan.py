@@ -24,9 +24,9 @@ def _tool_call_response(name="noop", args="{}", tc_id="call_1"):
 
 
 class _StubTool(Tool):
-    def __init__(self, name="noop"):
+    def __init__(self, name="noop", side_effect_free=True):
         super().__init__(name, "stub")
-        self.side_effect_free = True
+        self.side_effect_free = side_effect_free
 
     def run(self, parameters):
         return f"{self.name}-ok"
@@ -117,7 +117,7 @@ def test_stuck_triggers_replan(monkeypatch):
         [_tool_call_response("noop"),        # 触发工具门控
          _text_response("try1"), _text_response("try2"),   # 两轮无 DONE → STUCK
          _text_response("try3 DONE")],       # replan 后含 DONE → 收敛
-        spec=spec, tools=[_StubTool("noop")], replan_budget=1)
+        spec=spec, tools=[_StubTool("noop", side_effect_free=False)], replan_budget=1)
     called = {"n": 0}
     monkeypatch.setattr(agent, "_make_plan",
                         lambda task, fb: (called.__setitem__("n", called["n"] + 1), "换思路:输出 DONE")[1])
@@ -134,7 +134,7 @@ def test_replan_budget_zero_stops_on_stuck(monkeypatch):
     agent = _make_agent(
         monkeypatch,
         [_tool_call_response("noop"), _text_response("try1"), _text_response("try2")],
-        spec=spec, tools=[_StubTool("noop")], replan_budget=0)
+        spec=spec, tools=[_StubTool("noop", side_effect_free=False)], replan_budget=0)
 
     def _boom(task, fb):
         raise AssertionError("budget=0 不该调用 _make_plan")
@@ -151,7 +151,7 @@ def test_oscillating_triggers_replan(monkeypatch):
         [_tool_call_response("noop"),
          _text_response("same"), _text_response("same"),    # 指纹重现 → OSCILLATING
          _text_response("DONE here")],
-        spec=spec, tools=[_StubTool("noop")], replan_budget=1)
+        spec=spec, tools=[_StubTool("noop", side_effect_free=False)], replan_budget=1)
     agent.convergence_judge = ConvergenceJudge(hard_cap=10, K=99)   # 排除 STUCK,只看 OSCILLATING
     called = {"n": 0}
     monkeypatch.setattr(agent, "_make_plan",

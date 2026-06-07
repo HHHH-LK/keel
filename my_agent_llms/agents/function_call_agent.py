@@ -119,6 +119,7 @@ class MyFunctionCallAgent(Agent):
 
         tools = self._build_tool_schemas()
         tool_call_count = 0
+        self._turn_mutated = False    # 本轮是否动过有副作用工具 → 决定 verify 闸门是否开
 
         final_response = ""
         # 验证-重试 gate 的循环外状态(spec 首次进 gate 时惰性生成一次,之后不变)
@@ -159,8 +160,9 @@ class MyFunctionCallAgent(Agent):
 
             if not tool_calls:
                 candidate = self._extract_message_content(message)
-                # 工具门控:本轮没用过工具(闲聊/纯问答)→ 跳过验证,零开销返回首答。
-                if not getattr(self, "enable_verify", False) or tool_call_count == 0:
+                # 工具门控:本轮没动过【有副作用】工具(闲聊/纯问答/只读探索)→ 跳过验证,
+                # 零开销返回首答。只读任务不该被凭空生成 spec、逼模型凑关键词/重答。
+                if not self._should_run_verify(self._turn_mutated):
                     final_response = candidate
                     break
                 # ── 验证-重试 gate(硬插入,不靠模型自觉)──
@@ -345,6 +347,14 @@ class MyFunctionCallAgent(Agent):
         if msg:
             messages.append(msg)
 
+    def _should_run_verify(self, mutated: bool) -> bool:
+        """verify-retry 闸门是否该开:开关开 且 本轮动过【有副作用】工具。
+
+        纯只读探索/问答(Read/LS/Glob/Grep)不验证 —— 否则 SpecGenerator 会给开放
+        问答凭空编 spec(string_contains/tool_called),反馈回灌逼模型凑关键词、重答
+        整篇(见 test_verify_gate_trigger)。"""
+        return bool(getattr(self, "enable_verify", False)) and mutated
+
     def _tool_is_side_effect_free(self, name: str) -> bool:
         """白名单判定:仅 Tool.side_effect_free=True 的才允许并行。
         轻量函数工具(无 Tool 对象)与未标记的一律按有副作用处理 → 串行。"""
@@ -435,6 +445,8 @@ class MyFunctionCallAgent(Agent):
         to_exec = [p for p in plans if p["execute"]]
         serial = [p for p in to_exec if not self._tool_is_side_effect_free(p["name"])]
         parallel = [p for p in to_exec if self._tool_is_side_effect_free(p["name"])]
+        if serial:
+            self._turn_mutated = True       # 执行了有副作用工具 → 本轮可进 verify 闸门
 
         for p in serial:
             p["result"], p["elapsed"] = self._run_single_tool(p["name"], p["args"], timeout)

@@ -114,9 +114,10 @@ def test_verify_retries_until_pass(monkeypatch):
         monkeypatch,
         [_tool_call_response("noop"),
          _text_response("还在想"), _text_response("最终结论给出")],
-        enable_verify=True, spec=spec, tools=[_StubTool("noop")])
+        enable_verify=True, spec=spec,
+        tools=[_StubTool("noop", side_effect_free=False)])
     out = agent.run("t")
-    assert out == "最终结论给出"        # 用过工具 → 验证生效;第一答缺"结论"→反馈喂回→第二答补上
+    assert out == "最终结论给出"        # 动过改动类工具 → 验证生效;第一答缺"结论"→反馈喂回→第二答补上
     # 注入的 user feedback 应出现在最后一次 LLM 调用看到的 messages 里
     feedback_msgs = [m for m in agent._captured[-1]
                      if m.get("role") == "user" and "验收项" in m.get("content", "")]
@@ -128,13 +129,14 @@ def test_verify_returns_best_on_max_steps(monkeypatch):
         Check(id="a", type="string_contains", params={"s": "X"}),
         Check(id="b", type="string_contains", params={"s": "Y"}),
     ])
-    # 前置工具调用触发门控;之后三答都不全过,第 2 答残差最低(含 X) → 返回 best
+    # 前置改动类工具调用触发门控;之后三答都不全过,第 2 答残差最低(含 X) → 返回 best
     agent = _make_agent(
         monkeypatch,
         [_tool_call_response("noop"),
          _text_response("none"), _text_response("has X"),
          _text_response("none2"), _text_response("none3")],
-        enable_verify=True, spec=spec, tools=[_StubTool("noop")])
+        enable_verify=True, spec=spec,
+        tools=[_StubTool("noop", side_effect_free=False)])
     out = agent.run("t")
     assert out == "has X"
 
@@ -149,7 +151,8 @@ def test_verify_returns_best_when_max_steps_exhausted_without_verdict(monkeypatc
     agent = _make_agent(
         monkeypatch,
         [_tool_call_response("noop"), _text_response("has X")],  # 只给两条:触发兜底第三次调用会 IndexError
-        enable_verify=True, spec=spec, tools=[_StubTool("noop")])
+        enable_verify=True, spec=spec,
+        tools=[_StubTool("noop", side_effect_free=False)])
     agent.max_steps = 2
     agent.convergence_judge = ConvergenceJudge(hard_cap=5, K=99)
     out = agent.run("t")
