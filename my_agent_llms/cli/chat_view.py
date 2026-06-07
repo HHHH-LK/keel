@@ -309,8 +309,8 @@ def _summarize_grep(text: str) -> Optional[str]:
 
 # 工具名 → 首行摘要函数;返回 None 则回退泛型 body
 _TOOL_RESULT_SUMMARY = {
-    "ReadFile": _summarize_read,
-    "GrepTool": _summarize_grep,
+    "Read": _summarize_read,
+    "Grep": _summarize_grep,
 }
 
 

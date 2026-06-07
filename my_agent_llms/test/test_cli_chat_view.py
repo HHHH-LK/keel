@@ -112,10 +112,10 @@ def test_tool_result_folds_to_four_lines_with_more_marker():
 
 
 def test_tool_result_short_output_no_more_marker():
-    # ReadFile now shows a line-count summary instead of body text (P2-2 behavior).
+    # Read 工具显示行数摘要而非正文(P2-2 behavior;真实工具名是 "Read")。
     def run(console):
         r = chat_view.StreamingAgentRenderer(console)
-        r.tool_notice("ReadFile", "a.py")
+        r.tool_notice("Read", "a.py")
         r.tool_result("✅ ok\nline2", elapsed_sec=0.05)
         r.close()
     out = _capture_renderer(run)
@@ -182,7 +182,7 @@ def test_write_todo_renders_as_update_todos_checklist():
 def test_read_result_summarized_by_line_count():
     def run(console):
         r = chat_view.StreamingAgentRenderer(console)
-        r.tool_notice("ReadFile", "a.py")
+        r.tool_notice("Read", "a.py")
         r.tool_result("line1\nline2\nline3\nline4\nline5\nline6")  # 6 行
         r.close()
     out = _capture_renderer(run)

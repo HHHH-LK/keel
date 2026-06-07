@@ -113,3 +113,33 @@ def test_tool_mutating_success_dot_is_green():
     r.tool_result("已写入 3 行")
     notice = commits[0]
     assert any(theme.OK in str(s.style) for s in notice.spans)
+
+
+def test_tool_result_folds_long_output():
+    # 长结果折叠到前几行 + "… +N lines",不全量倒出(Claude Code 风,防混乱)
+    r, commits, actives = _make()
+    r.tool_call("Bash", "ls", read_only=False)
+    r.tool_result("\n".join(f"line{i}" for i in range(20)))
+    body = commits[1].plain
+    assert "line0" in body
+    assert "line19" not in body          # 尾部折掉
+    assert "+16 lines" in body           # 20-4=16 行被折
+
+
+def test_tool_result_read_summary_not_raw():
+    # Read 工具 → "Read N lines" 摘要,而非倒文件内容
+    r, commits, actives = _make()
+    r.tool_call("Read", "path=x", read_only=True)
+    r.tool_result("aaa\nbbb\nccc")
+    body = commits[1].plain
+    assert "Read 3 lines" in body
+    assert "bbb" not in body
+
+
+def test_write_todo_renders_update_todos():
+    r, commits, actives = _make()
+    r.tool_call("write_todo", "")
+    r.tool_result("## Todos\n[x] 读配置\n[ ] 写代码")
+    out = "\n".join(c.plain for c in commits)
+    assert "Update Todos" in out
+    assert "☑" in out and "☐" in out

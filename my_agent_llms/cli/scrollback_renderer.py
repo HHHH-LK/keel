@@ -76,13 +76,18 @@ class ScrollbackRenderer:
         self._flush_text()
         self._pending = (name, args_preview, read_only)
 
-    def tool_result(self, text: str, *, elapsed_sec=None) -> None:
+    def tool_result(self, text: str, *, elapsed_sec=None,
+                    max_lines: int = 4, max_line_chars: int = 300) -> None:
+        """工具结果(Claude Code 风编排,不全量倒出):
+        - write_todo → 'Update Todos' 内联清单
+        - 有 per-type 摘要(Read/Grep…)→ 一行摘要(如 'Read 42 lines')
+        - 否则 → 折叠到前 max_lines 行 + '… +N lines',每行截宽
+        """
         if not text:
             return
         name, preview, read_only = getattr(self, "_pending", ("", "", False))
         self._pending = ("", "", False)
-        # Claude Code 风:出错→红;只读工具→中性(不上色);改动类成功→绿。
-        # 即"不是所有工具都变色",只有改动类成败/任何出错才染色。
+        # ⏺ 颜色:出错→红;只读→中性;改动类成功→绿。
         stripped = text.lstrip()
         if stripped.startswith("❌") or "拒绝" in stripped:
             color = theme.ERR
@@ -90,11 +95,41 @@ class ScrollbackRenderer:
             color = theme.DEFAULT
         else:
             color = theme.OK
+
+        # write_todo → 内联 Update Todos 清单
+        if name == "write_todo":
+            self._commit(chat_view._tool_notice_lines("Update Todos", "", theme.DEFAULT))
+            self._commit(chat_view._render_update_todos(text))
+            return
+
         self._commit(chat_view._tool_notice_lines(name, preview, color))
-        body = text.rstrip("\n")
+
+        # per-type 一行摘要(命中才用)
+        summarizer = chat_view._TOOL_RESULT_SUMMARY.get(name)
+        if summarizer is not None:
+            summary = summarizer(text)
+            if summary:
+                if elapsed_sec is not None:
+                    summary = f"{summary}  ·  {chat_view._fmt_elapsed(elapsed_sec)}"
+                self._commit(chat_view._continuation_lines(summary, color))
+                return
+
+        # 泛型:截宽 + 折叠行数 + elapsed 拼首行
+        lines = text.rstrip("\n").splitlines() or [""]
+        clipped = [
+            (ln if len(ln) <= max_line_chars else ln[:max_line_chars - 1] + "…")
+            for ln in lines
+        ]
+        hidden = 0
+        if len(clipped) > max_lines:
+            hidden = len(clipped) - max_lines
+            clipped = clipped[:max_lines]
+        body = "\n".join(clipped)
         if elapsed_sec is not None:
-            body = f"{body}  ·  {chat_view._fmt_elapsed(elapsed_sec)}"
-        self._commit(chat_view._continuation_lines(body, color))
+            bl = body.split("\n")
+            bl[0] = f"{bl[0]}  ·  {chat_view._fmt_elapsed(elapsed_sec)}"
+            body = "\n".join(bl)
+        self._commit(chat_view._continuation_lines(body, color, more=hidden))
 
     def close(self, *, tools_used: int = 0, elapsed_seconds: float = 0.0,
               tokens_in: int = 0, tokens_out: int = 0) -> None:
