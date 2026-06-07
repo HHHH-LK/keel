@@ -327,6 +327,7 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
             max_steps=1000,
             workspace=ws,
             enable_verify=True,
+            enable_tdd=os.getenv("MY_ENABLE_TDD", "1") != "0",
             todo_store=todo_store,
         )
     except Exception as exc:
@@ -1040,6 +1041,19 @@ class ChatCLI:
         self.turn += 1
 
     def run(self) -> None:
+        import os
+        import sys
+        from my_agent_llms.cli import live_session
+        use_live = sys.stdout.isatty() and not os.environ.get("MYAI_LEGACY_UI")
+        if use_live:
+            try:
+                live_session.run(self)
+                return
+            except Exception as exc:          # 并发 UI 起不来 → 回退串行
+                console.print(f"[yellow]并发 UI 启动失败,回退串行: {exc}[/yellow]")
+        self._run_serial()
+
+    def _run_serial(self) -> None:
         self.print_banner()
         while True:
             try:
