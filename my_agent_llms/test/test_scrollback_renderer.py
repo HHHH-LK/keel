@@ -44,3 +44,20 @@ def test_reasoning_streams_active_then_commits_folded_on_switch():
     r.text_chunk("正式回答")          # 切到正文 → 思考块折叠 commit
     assert any("我先想" in c.plain and "✻" in c.plain for c in commits)
     assert actives[-1][1] == "text"
+
+
+def test_close_commits_remaining_block_and_meta():
+    r, commits, actives = _make()
+    r.text_chunk("一段没有空行的话")          # 无块边界 → 残块留 active
+    assert not any("一段没有空行" in c.plain for c in commits)
+    r.close(tools_used=2, elapsed_seconds=2.4, tokens_in=100, tokens_out=50)
+    # 残块在 close 时 commit;meta 行带 tools/elapsed/token
+    assert any("一段没有空行" in c.plain for c in commits)
+    assert any("2 tools" in c.plain and "100↑ 50↓" in c.plain for c in commits)
+    assert actives[-1][0] == ""               # 收尾清空活跃区
+
+
+def test_close_without_output_is_noop():
+    r, commits, actives = _make()
+    r.close()
+    assert commits == []

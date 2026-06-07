@@ -60,6 +60,29 @@ class ScrollbackRenderer:
         self._reason_buf += chunk
         self._set_active(self._reason_buf, "reasoning", False)
 
+    def close(self, *, tools_used: int = 0, elapsed_seconds: float = 0.0,
+              tokens_in: int = 0, tokens_out: int = 0) -> None:
+        if not self._opened:
+            return
+        if self._mode == "reasoning":
+            self._close_reasoning()
+        buf, self._text_buf = self._text_buf, ""
+        if buf.strip():
+            self._commit(self._render_md(buf, with_dot=not self._dot))
+            self._dot = True
+        self._set_active("", "text", self._dot)
+        parts: list[str] = []
+        if tools_used > 0:
+            parts.append(f"{tools_used} tools")
+        if elapsed_seconds > 0:
+            parts.append(chat_view._fmt_elapsed(elapsed_seconds))
+        if tokens_in > 0 or tokens_out > 0:
+            parts.append(f"{tokens_in}↑ {tokens_out}↓")
+        if parts:
+            meta = Text("  ")
+            meta.append("  ·  ".join(parts), style=theme.DIM)
+            self._commit(meta)
+
     def _close_reasoning(self) -> None:
         # 收尾思考段总是切回 text 模式 —— 在此自洽复位,避免被 close()/tool_call 等
         # 独立调用后 _mode 残留 "reasoning"(否则下个 text_chunk 会误触二次 close)。
