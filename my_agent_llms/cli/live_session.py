@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import io
+import os
 import shutil
 import time
 from functools import partial
@@ -63,6 +64,17 @@ def _to_ansi(text_obj: Text, w: int) -> str:
     return buf.getvalue().rstrip("\n")
 
 
+def _short_cwd() -> str:
+    """当前目录,家目录缩成 ~。"""
+    cwd = os.getcwd()
+    home = os.path.expanduser("~")
+    return "~" + cwd[len(home):] if cwd.startswith(home) else cwd
+
+
+def _fmt_tokens(n: int) -> str:
+    return str(n) if n < 1000 else f"{n / 1000:.1f}k"
+
+
 def _preview(args: Dict) -> str:
     """工具参数 → 'k=v, k=v' 预览(取前 3 个)。"""
     try:
@@ -76,7 +88,10 @@ class LiveSession:
 
     def __init__(self, cli):
         self.cli = cli                       # ChatCLI(持 self.agent / self.grants)
-        self.state = {"busy": False, "spin": 0, "cancel": False}
+        self.state = {"busy": False, "spin": 0, "cancel": False,
+                      "cwd": _short_cwd(),         # 底部信息栏:当前目录
+                      "l1_tokens": 0,              # 当前 L1 上下文长度(每轮末刷新)
+                      "sess_in": 0, "sess_out": 0}  # 本会话累计 token
         # 活跃块三元组单次原子赋值(src, mode, dot) —— 工作线程写、loop 线程读,
         # 用单一不可变快照避免多键 update 被 redraw 读到撕裂组合(I1)。
         self._active: tuple = ("", "text", False)
@@ -118,6 +133,18 @@ class LiveSession:
         else:
             head = "● 就绪"
         return [("class:status", f"  {head}")]
+
+    def _info_bar_fragments(self):
+        """输入框下方信息栏:当前目录 · 模型 · 上下文 L1/上限 · 本会话 token。"""
+        cfg = getattr(self.cli, "cfg", {}) or {}
+        parts = [self.state["cwd"]]
+        model = cfg.get("model")
+        if model:
+            parts.append(model)
+        parts.append(f"ctx {self.state['l1_tokens']}/{_fmt_tokens(4000)}")
+        parts.append(f"{_fmt_tokens(self.state['sess_in'])}↑ "
+                     f"{_fmt_tokens(self.state['sess_out'])}↓")
+        return [("class:infobar", "  " + "  ·  ".join(parts))]
 
     # ── 审批:工作线程 → 事件循环 → 阻塞等结果 ───────────────────
     def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
@@ -194,7 +221,15 @@ class LiveSession:
         r.close(tools_used=getattr(self.cli.agent, "last_tool_call_count", 0),
                 elapsed_seconds=time.monotonic() - start,
                 tokens_in=tok["in"], tokens_out=tok["out"])
-        self.state.update(busy=False, active="")
+        # 底部信息栏统计:本会话累计 token + 当前 L1 上下文长度(此刻在 worker 线程,
+        # agent.run 已结束,顺序读 memory 安全;不在每次重绘时读,避免与生成并发)
+        self.state["sess_in"] += tok["in"]
+        self.state["sess_out"] += tok["out"]
+        try:
+            self.state["l1_tokens"] = self.cli.agent.memory.stats().get("l1_tokens", 0)
+        except Exception:
+            pass
+        self.state["busy"] = False
         if self.app is not None:
             self.app.invalidate()
 
@@ -268,6 +303,7 @@ class LiveSession:
                            height=D(min=0, max=12)),
             filter=Condition(lambda: bool(self._active[0])))
         status = Window(FormattedTextControl(self._status_fragments), height=1)
+        info = Window(FormattedTextControl(self._info_bar_fragments), height=1)
         fill = partial(Window, style="class:frame.border")
         top = VSplit([fill(width=1, height=1, char="╭"), fill(char="─"),
                       fill(width=1, height=1, char="╮")], height=1)
@@ -276,10 +312,10 @@ class LiveSession:
         # 钉 height=1:跟 top/bottom 一致,否则两侧 │ 竖条会竖向撑高、把输入框抻成多行。
         middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
                          Window(width=1), fill(width=1, char="│")], height=1)
-        # 状态行(✻ 生成中…)放输入框【上方】;输入框作为最后一个元素(下方无窗口)。
-        root = HSplit([active, status, HSplit([top, middle, bottom])])
+        # 生成中状态行在框上方;信息栏(目录/模型/上下文/token)在框下方。
+        root = HSplit([active, status, HSplit([top, middle, bottom]), info])
         style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
-                                 "status": "gray"})
+                                 "status": "gray", "infobar": "#666666"})
         return Application(layout=Layout(root, focused_element=ta),
                            key_bindings=kb, style=style,
                            full_screen=False, mouse_support=False)
