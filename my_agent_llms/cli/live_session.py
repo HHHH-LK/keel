@@ -63,23 +63,31 @@ _APPROVAL_OPTIONS = [
 ]
 
 
-def _render_approval_box(name: str, preview: str, sel: int, width: int) -> str:
-    """圆角框 + ❯ 选择器(从 _demo_approval 并进来):标题=工具名,框内 diff 预览 +
-    问题 + 三个带 ❯ 光标的选项。返回带 ANSI 的字符串(供 ptk 当 ANSI 片段渲染)。
+def _render_preview_block(name: str, preview: str) -> Text:
+    """待审批的【完整改动】渲成一块,提交进 scrollback —— 可用终端原生上滑查看全部,
+    不截断(审批框只放选项,内容在这里看)。+绿 / -红 / 其余暗。"""
+    out = Text()
+    out.append("⏺ ", style=theme.AGENT)
+    out.append(f"{name}  ·  待确认", style=theme.DIM)
+    for line in (preview or "").split("\n"):
+        out.append("\n  ")
+        if line.startswith("+") and not line.startswith("+++"):
+            out.append(line, style="ansigreen")
+        elif line.startswith("-") and not line.startswith("---"):
+            out.append(line, style="ansired")
+        else:
+            out.append(line, style=theme.DIM)
+    return out
 
-    配色走简化版:灰边框 + cyan 一个强调色(选中项),diff 仍绿/红语义色。
-    """
-    preview = preview or ""
-    # 截断长 diff:否则框会撑到几十行,把下面的 1/2/3 选项挤出屏幕(用户看不到选项)。
-    _MAX_PREVIEW = 12
-    _plines = preview.split("\n")
-    if len(_plines) > _MAX_PREVIEW:
-        preview = "\n".join(_plines[:_MAX_PREVIEW]) + f"\n… +{len(_plines) - _MAX_PREVIEW} 行"
-    body = (Syntax(preview, "diff", theme="ansi_dark", background_color="default")
-            if _looks_like_diff(preview) else Text(preview))
 
+def _render_approval_box(name: str, sel: int, width: int) -> str:
+    """紧凑审批框:标题=工具名 + ❯ 选择器三选项。**不放 diff**——完整改动已落
+    scrollback(可上滑查看),框只管选,保证选项永远可见、框不会被撑大。
+
+    配色:灰边框 + cyan 一个强调色(选中项)。返回带 ANSI 的字符串(喂 ptk)。"""
     opts = Text()
-    opts.append("\n是否执行此操作?\n", style="bold")
+    opts.append("完整改动见上方(可上滑查看)\n", style=theme.DIM)
+    opts.append("是否执行此操作?\n", style="bold")
     for i, (_dec, label, hint) in enumerate(_APPROVAL_OPTIONS):
         cur = i == sel
         opts.append(" ❯ " if cur else "   ", style="cyan" if cur else "")
@@ -89,7 +97,7 @@ def _render_approval_box(name: str, preview: str, sel: int, width: int) -> str:
     buf = io.StringIO()
     con = RichConsole(file=buf, force_terminal=True, color_system="truecolor",
                       width=width)
-    con.print(Panel(Group(body, opts), title=f"  {name}", title_align="left",
+    con.print(Panel(opts, title=f"  {name}", title_align="left",
                     border_style="grey50"))
     return buf.getvalue().rstrip("\n")
 
@@ -236,7 +244,7 @@ class LiveSession:
         if not appr:
             return []
         sel = self.state.get("appr_sel", 0)
-        return ANSI(_render_approval_box(appr["name"], appr["preview"], sel, _width()))
+        return ANSI(_render_approval_box(appr["name"], sel, _width()))
 
     def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
         """工作线程调用:命中授权台账直接放行;否则在事件循环弹浮层,阻塞等 Future。"""
@@ -247,6 +255,9 @@ class LiveSession:
             pass
         if self._loop is None:
             return False
+        # 完整改动先落 scrollback(可上滑查看全部);审批框只放选项,不再塞 diff。
+        if preview:
+            self._commit(_render_preview_block(name, preview))
         fut: "concurrent.futures.Future[bool]" = concurrent.futures.Future()
         self._pending_fut = fut                       # 记录,退出时由 _main 解锁(C1)
         appr = {"fut": fut, "name": name, "args": args, "preview": preview}

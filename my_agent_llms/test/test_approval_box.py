@@ -1,4 +1,4 @@
-"""审批浮层:圆角框 + ❯ 选择器(从 _demo_approval 并进 live_session)。"""
+"""审批:紧凑框(标题+❯选择器+选项)+ 完整改动落 scrollback(可上滑查看)。"""
 import re
 
 from my_agent_llms.cli import live_session as ls
@@ -9,41 +9,40 @@ def _plain(s: str) -> str:
 
 
 def test_approval_box_lists_three_options():
-    raw = _plain(ls._render_approval_box("Write", "写入 LICENSE", sel=0, width=70))
+    raw = _plain(ls._render_approval_box("Write", sel=0, width=70))
     assert "执行一次" in raw
     assert "本会话" in raw
     assert "拒绝" in raw
 
 
 def test_approval_box_marks_only_selected_option_with_cursor():
-    raw = _plain(ls._render_approval_box("Write", "写入 LICENSE", sel=1, width=70))
+    raw = _plain(ls._render_approval_box("Write", sel=1, width=70))
     sel_line = next(l for l in raw.split("\n") if "本会话" in l)
     once_line = next(l for l in raw.split("\n") if "执行一次" in l)
-    deny_line = next(l for l in raw.split("\n") if "拒绝" in l)
-    assert "❯" in sel_line            # 选中项(index 1)带光标
-    assert "❯" not in once_line       # 其余不带
-    assert "❯" not in deny_line
+    assert "❯" in sel_line
+    assert "❯" not in once_line
 
 
 def test_approval_box_shows_tool_name():
-    raw = _plain(ls._render_approval_box("Edit", "改 pyproject.toml", sel=0, width=70))
+    raw = _plain(ls._render_approval_box("Edit", sel=0, width=70))
     assert "Edit" in raw
 
 
-def test_approval_box_caps_long_preview_so_options_stay_visible():
-    long_diff = "\n".join(f"+ line {i} of a big file" for i in range(40))
-    raw = _plain(ls._render_approval_box("Write", long_diff, sel=0, width=72))
-    lines = raw.split("\n")
-    # 长 diff 必须被截断,框不能撑到 40+ 行(否则选项被挤出屏幕 → 用户看不到)
-    assert len(lines) <= 24
-    # 三个选项仍在
-    assert "执行一次" in raw and "本会话" in raw and "拒绝" in raw
-    # 有截断标记
-    assert "…" in raw
+def test_approval_box_stays_compact_without_diff():
+    # 框内不再塞 diff —— 无论改动多大,框都紧凑,选项常驻可见。
+    raw = _plain(ls._render_approval_box("Write", sel=0, width=70))
+    assert len(raw.split("\n")) <= 12
+
+
+def test_preview_block_keeps_full_content_for_scrollback():
+    # 完整改动落 scrollback(可上滑查看),不截断。
+    long_diff = "\n".join(f"+ line {i}" for i in range(40))
+    blk = ls._render_preview_block("Write", long_diff)
+    assert "line 0" in blk.plain
+    assert "line 39" in blk.plain          # 末尾内容也在
 
 
 def test_approval_options_map_to_decisions():
-    # 顺序:执行一次 / 本会话总是 / 拒绝 → ALLOW_ONCE / ALLOW_ALWAYS / DENY
     from my_agent_llms.cli.permission import PermissionDecision
     decisions = [d for d, _label, _hint in ls._APPROVAL_OPTIONS]
     assert decisions == [
