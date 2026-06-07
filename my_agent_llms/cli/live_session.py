@@ -42,10 +42,12 @@ from prompt_toolkit.widgets import TextArea
 from rich.console import Console as RichConsole
 from rich.text import Text
 
+from rich.panel import Panel
+from rich.syntax import Syntax
+
 from . import chat_view, theme
 from .markdown_render import render_markdown
-from .permission import TerminalNotInteractiveError, prompt_permission
-from .permission_grants import decide
+from .permission import PermissionDecision, _looks_like_diff
 from .scrollback_renderer import ScrollbackRenderer
 
 _SPIN = ["✻", "✲", "✳", "✴", "✵", "✶", "✷"]
@@ -146,39 +148,73 @@ class LiveSession:
                      f"{_fmt_tokens(self.state['sess_out'])}↓")
         return [("class:infobar", "  " + "  ·  ".join(parts))]
 
-    # ── 审批:工作线程 → 事件循环 → 阻塞等结果 ───────────────────
+    # ── 审批:应用内浮层(无嵌套 app)────────────────────────────
+    def _approval_fragments(self):
+        """审批浮层内容:工具名 + preview(diff 高亮)+ 1/2/3 提示。空闲返回 []。"""
+        appr = self.state.get("approval")
+        if not appr:
+            return []
+        preview = appr["preview"] or ""
+        w = _width()
+        body = (Syntax(preview, "diff", theme="ansi_dark", background_color="default")
+                if _looks_like_diff(preview) else preview)
+        buf = io.StringIO()
+        con = RichConsole(file=buf, force_terminal=True,
+                          color_system="truecolor", width=w)
+        con.print(Panel(body, title=f"  {appr['name']}", title_align="left",
+                        border_style=theme.AGENT))
+        con.print(f"  是否允许?  [{theme.OK}]1.[/]允许一次  "
+                  f"[{theme.OK}]2.[/]本会话总是  [{theme.ERR}]3.[/]拒绝   "
+                  f"[{theme.DIM}](1/Enter=是 · 3/Esc=否)[/]")
+        return ANSI(buf.getvalue().rstrip("\n"))
+
     def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
-        """从工作线程调用。把审批调度回事件循环线程,阻塞等 Future。
-
-        临时实现(Phase 3 换应用内浮层):run_in_terminal 挂起常驻 app,
-        复用现有 decide()/prompt_permission(三态 y/n/记住)。任何异常 → 安全拒绝。
-        """
-        fut: "concurrent.futures.Future[bool]" = concurrent.futures.Future()
-
-        async def _coro():
-            def _ask() -> bool:
-                try:
-                    return bool(decide(self.cli.grants, prompt_permission,
-                                       name, args, preview))
-                except TerminalNotInteractiveError:
-                    return False
-            try:
-                ok = await run_in_terminal(_ask)
-            except Exception:
-                ok = False
-            if not fut.done():
-                fut.set_result(ok)
-
+        """工作线程调用:命中授权台账直接放行;否则在事件循环弹浮层,阻塞等 Future。"""
+        try:
+            if self.cli.grants.is_granted(name, args):
+                return True
+        except Exception:
+            pass
         if self._loop is None:
             return False
+        fut: "concurrent.futures.Future[bool]" = concurrent.futures.Future()
         self._pending_fut = fut                       # 记录,退出时由 _main 解锁(C1)
-        self._loop.call_soon_threadsafe(lambda: self._loop.create_task(_coro()))
+        appr = {"fut": fut, "name": name, "args": args, "preview": preview}
+
+        def _show():
+            self.state["approval"] = appr
+            if self.app is not None:
+                self.app.invalidate()
+
+        self._loop.call_soon_threadsafe(_show)
         try:
             return fut.result(timeout=_APPROVAL_TIMEOUT_S)
         except Exception:
             return False
         finally:
             self._pending_fut = None
+
+    def _resolve_approval(self, decision: "PermissionDecision") -> None:
+        """主循环按键回调:落定审批,唤醒工作线程。"""
+        appr = self.state.get("approval")
+        if not appr:
+            return
+        self.state["approval"] = None
+        if decision is PermissionDecision.ALLOW_ALWAYS:
+            try:
+                self.cli.grants.grant(appr["name"], appr["args"])
+            except Exception:
+                pass
+            ok = True
+        elif decision is PermissionDecision.ALLOW_ONCE:
+            ok = True
+        else:
+            ok = False
+        fut = appr["fut"]
+        if not fut.done():
+            fut.set_result(ok)
+        if self.app is not None:
+            self.app.invalidate()
 
     def _is_read_only(self, name: str) -> bool:
         """工具是否只读(side_effect_free)—— 决定 ⏺ 上色:只读中性,改动类绿/红。"""
@@ -283,7 +319,27 @@ class LiveSession:
             queue.put_nowait(text)               # 普通输入 → 排队给 agent
             event.app.invalidate()
 
-        @kb.add("escape")
+        # ── 审批浮层按键(仅审批弹起时生效,eager 抢在输入框前拦截)──
+        appr_on = Condition(lambda: self.state.get("approval") is not None)
+
+        @kb.add("1", filter=appr_on, eager=True)
+        @kb.add("y", filter=appr_on, eager=True)
+        @kb.add("enter", filter=appr_on, eager=True)
+        def _(event):
+            self._resolve_approval(PermissionDecision.ALLOW_ONCE)
+
+        @kb.add("2", filter=appr_on, eager=True)
+        @kb.add("a", filter=appr_on, eager=True)
+        def _(event):
+            self._resolve_approval(PermissionDecision.ALLOW_ALWAYS)
+
+        @kb.add("3", filter=appr_on, eager=True)
+        @kb.add("n", filter=appr_on, eager=True)
+        @kb.add("escape", filter=appr_on, eager=True)
+        def _(event):
+            self._resolve_approval(PermissionDecision.DENY)
+
+        @kb.add("escape", filter=~appr_on)
         def _(event):
             if self.state["busy"]:
                 self.state["cancel"] = True
@@ -304,6 +360,11 @@ class LiveSession:
             filter=Condition(lambda: bool(self._active[0])))
         status = Window(FormattedTextControl(self._status_fragments), height=1)
         info = Window(FormattedTextControl(self._info_bar_fragments), height=1)
+        # 审批浮层:仅审批弹起时显示,在输入框上方
+        approval = ConditionalContainer(
+            content=Window(FormattedTextControl(self._approval_fragments),
+                           dont_extend_height=True),
+            filter=appr_on)
         fill = partial(Window, style="class:frame.border")
         top = VSplit([fill(width=1, height=1, char="╭"), fill(char="─"),
                       fill(width=1, height=1, char="╮")], height=1)
@@ -312,8 +373,8 @@ class LiveSession:
         # 钉 height=1:跟 top/bottom 一致,否则两侧 │ 竖条会竖向撑高、把输入框抻成多行。
         middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
                          Window(width=1), fill(width=1, char="│")], height=1)
-        # 生成中状态行在框上方;信息栏(目录/模型/上下文/token)在框下方。
-        root = HSplit([active, status, HSplit([top, middle, bottom]), info])
+        # 审批浮层在最上,生成中状态行在框上方,信息栏在框下方。
+        root = HSplit([active, approval, status, HSplit([top, middle, bottom]), info])
         style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
                                  "status": "gray", "infobar": "#666666"})
         return Application(layout=Layout(root, focused_element=ta),
