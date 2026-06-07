@@ -38,8 +38,18 @@ class ScrollbackRenderer:
         self._group: list = []
         self._group_name = None
         self._group_ro = False
+        # 块间留白:每个新"步"(⏺/✻ 开头的块)落地前补一行空行,除了本轮首块 ——
+        # 跟 Claude Code 一致,工具/思考/正文各块之间不挤在一起。
+        self._committed_any = False
 
     # ── 渲染 ──
+    def _commit_step(self, text_obj: Text) -> None:
+        """落地一个新步块:非首块时先补一行空行做分隔。"""
+        if self._committed_any:
+            self._commit(Text(""))
+        self._commit(text_obj)
+        self._committed_any = True
+
     def _render_md(self, src: str, *, with_dot: bool) -> Text:
         body = render_markdown(src, self._width())
         return (chat_view._step_lines_from_text(body, theme.DEFAULT) if with_dot
@@ -57,7 +67,8 @@ class ScrollbackRenderer:
         self._text_buf += chunk
         committable, remainder = chat_view._split_committable(self._text_buf)
         if committable.strip():
-            self._commit(self._render_md(committable, with_dot=not self._dot))
+            block = self._render_md(committable, with_dot=not self._dot)
+            (self._commit_step if not self._dot else self._commit)(block)
             self._dot = True
             self._text_buf = remainder
         self._set_active(self._text_buf, "text", self._dot)
@@ -78,7 +89,8 @@ class ScrollbackRenderer:
         self._flush_group()
         buf, self._text_buf = self._text_buf, ""
         if buf.strip():
-            self._commit(self._render_md(buf, with_dot=not self._dot))
+            block = self._render_md(buf, with_dot=not self._dot)
+            (self._commit_step if not self._dot else self._commit)(block)
             self._dot = True
         self._set_active("", "text", self._dot)
 
@@ -130,16 +142,17 @@ class ScrollbackRenderer:
                        is_err: bool, text: str, *, elapsed_sec=None,
                        max_lines: int = 4, max_line_chars: int = 300) -> None:
         """单个工具结果落地(原 tool_result 主体)。"""
+        self._dot = False        # 工具块后,下一段正文重新起一个 ⏺ 步(带块间空行)
         # ⏺ 颜色:出错→红;只读→中性;改动类成功→绿。
         color = theme.ERR if is_err else (theme.DEFAULT if read_only else theme.OK)
 
         # write_todo → 内联 Update Todos 清单
         if name == "write_todo":
-            self._commit(chat_view._tool_notice_lines("Update Todos", "", theme.DEFAULT))
+            self._commit_step(chat_view._tool_notice_lines("Update Todos", "", theme.DEFAULT))
             self._commit(chat_view._render_update_todos(text))
             return
 
-        self._commit(chat_view._tool_notice_lines(name, preview, color))
+        self._commit_step(chat_view._tool_notice_lines(name, preview, color))
 
         # per-type 一行摘要(命中才用)
         summarizer = chat_view._TOOL_RESULT_SUMMARY.get(name)
@@ -182,9 +195,10 @@ class ScrollbackRenderer:
             return
         color = theme.DEFAULT if ro else theme.OK
         total = sum(e or 0 for _, _, e in items)
-        self._commit(chat_view._render_tool_group(
+        self._commit_step(chat_view._render_tool_group(
             name, [(p, t) for p, t, _ in items], color,
             elapsed_sec=total if total > 0 else None))
+        self._dot = False        # 工具组后,下一段正文重新起一个 ⏺ 步
 
     def close(self, *, tools_used: int = 0, elapsed_seconds: float = 0.0,
               tokens_in: int = 0, tokens_out: int = 0) -> None:
@@ -209,5 +223,6 @@ class ScrollbackRenderer:
         buf, self._reason_buf = self._reason_buf, ""
         self._mode = "text"
         if buf.strip():
-            self._commit(chat_view._render_thinking(buf))
+            self._commit_step(chat_view._render_thinking(buf))
+            self._dot = False    # 思考块后,正文重新起一个 ⏺ 步
         self._set_active("", "text", self._dot)

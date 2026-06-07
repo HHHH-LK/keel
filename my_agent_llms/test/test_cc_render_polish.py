@@ -67,6 +67,42 @@ def test_single_readonly_tool_still_commits_immediately():
     assert "Read 1 files" not in text   # 单个不走分组计数文案
 
 
+def test_blank_line_separates_consecutive_blocks():
+    r, commits, actives = _make()
+    r.tool_call("recall", "query=x")
+    r.tool_result("找到 5 条", name="recall")     # 第 1 块:无前导空行
+    r.reasoning_chunk("想一下下")
+    r.text_chunk("正式回答")                       # 切正文 → 先 commit 思考块,再正文
+    r.close()
+    plains = [c.plain for c in commits]
+    assert plains[0] != ""                         # 首块不加前导空行
+    assert "" in plains                            # 块间有空行分隔
+
+
+def test_blank_line_precedes_thinking_after_a_tool():
+    r, commits, actives = _make()
+    r.tool_call("recall", "query=x")
+    r.tool_result("找到 5 条", name="recall")
+    r.reasoning_chunk("想一下下")
+    r.text_chunk("答")
+    plains = [c.plain for c in commits]
+    idx = next(i for i, p in enumerate(plains) if p.startswith("✻"))
+    assert plains[idx - 1] == ""                   # 思考块前正好一行空行
+
+
+def test_text_after_tool_starts_new_step_with_blank_and_dot():
+    r, commits, actives = _make()
+    r.text_chunk("第一段\n\n")                      # 首个正文步(⏺)
+    r.tool_call("Read", "path=x", read_only=True)
+    r.tool_result("内容", name="Read", read_only=True)
+    r.text_chunk("工具之后的话")                     # 工具后的正文 → 新步
+    r.close()
+    plains = [c.plain for c in commits]
+    idx = next(i for i, p in enumerate(plains) if "工具之后的话" in p)
+    assert plains[idx].startswith("⏺")              # 自带 ⏺(不是缩进续行)
+    assert plains[idx - 1] == ""                    # 前有空行分隔
+
+
 def test_group_flushes_when_different_tool_arrives():
     r, commits, actives = _make()
     r.tool_call("Read", "path=a.py", read_only=True)
