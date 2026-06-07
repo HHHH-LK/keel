@@ -45,6 +45,7 @@ from .permission_grants import decide
 from .scrollback_renderer import ScrollbackRenderer
 
 _SPIN = ["✻", "✲", "✳", "✴", "✵", "✶", "✷"]
+_APPROVAL_TIMEOUT_S = 300        # 审批 Future 兜底超时(到点 → 安全拒绝,防工作线程永挂)
 
 
 def _width() -> int:
@@ -72,36 +73,40 @@ class LiveSession:
 
     def __init__(self, cli):
         self.cli = cli                       # ChatCLI(持 self.agent / self.grants)
-        self.state = {"busy": False, "spin": 0, "cancel": False,
-                      "active": "", "mode": "text", "dot": False}
+        self.state = {"busy": False, "spin": 0, "cancel": False}
+        # 活跃块三元组单次原子赋值(src, mode, dot) —— 工作线程写、loop 线程读,
+        # 用单一不可变快照避免多键 update 被 redraw 读到撕裂组合(I1)。
+        self._active: tuple = ("", "text", False)
+        self._pending_fut: "Optional[concurrent.futures.Future[bool]]" = None
         self.app: Optional[Application] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ── 渲染 sink(交给 ScrollbackRenderer)────────────────────
     def _commit(self, text_obj: Text) -> None:
-        print(_to_ansi(text_obj, _width()))          # patch_stdout(raw) → scrollback
+        # 工作线程经 patch_stdout(raw) print 进 scrollback。print 异常(并发重绘下
+        # 偶发)不得中断当前轮 —— 吞掉,丢这一块好过崩整轮(I2)。
+        try:
+            print(_to_ansi(text_obj, _width()))
+        except Exception:
+            pass
 
     def _set_active(self, src: str, mode: str, dot: bool) -> None:
-        self.state.update(active=src, mode=mode, dot=dot)
+        self._active = (src, mode, dot)              # 单次原子赋值(I1)
         if self.app is not None:
             self.app.invalidate()
 
-    def _emit_text(self, text_obj: Text) -> None:
-        """直接 print 一个 Rich Text 到 scrollback(供 system notice / 错误等用)。"""
-        print(_to_ansi(text_obj, _width()))
-
     # ── app 内 Window 内容回调 ────────────────────────────────
     def _active_fragments(self):
-        src = self.state["active"]
+        src, mode, dot = self._active               # 一次读出快照,不会撕裂
         if not src:
             return []
         w = _width()
-        if self.state["mode"] == "reasoning":
+        if mode == "reasoning":
             framed = chat_view._render_thinking(src)
         else:
             body = render_markdown(src, w)
             framed = (chat_view._step_lines_from_text(body, theme.DEFAULT)
-                      if not self.state["dot"] else chat_view._indent_only(body))
+                      if not dot else chat_view._indent_only(body))
         return ANSI(_to_ansi(chat_view._tail_cap(framed, 18), w))
 
     def _status_fragments(self):
@@ -136,11 +141,14 @@ class LiveSession:
 
         if self._loop is None:
             return False
+        self._pending_fut = fut                       # 记录,退出时由 _main 解锁(C1)
         self._loop.call_soon_threadsafe(lambda: self._loop.create_task(_coro()))
         try:
-            return fut.result(timeout=300)
+            return fut.result(timeout=_APPROVAL_TIMEOUT_S)
         except Exception:
             return False
+        finally:
+            self._pending_fut = None
 
     # ── 一轮:在后台线程跑 agent.run ──────────────────────────
     def _run_turn(self, user_input: str) -> None:
@@ -164,13 +172,13 @@ class LiveSession:
                 should_cancel=lambda: self.state["cancel"],
             )
         except Exception as exc:
-            self._emit_text(chat_view._continuation_lines(f"❌ {exc}", theme.ERR))
+            self._commit(chat_view._continuation_lines(f"❌ {exc}", theme.ERR))
         if self.state["cancel"]:
             buf = io.StringIO()
             con = RichConsole(file=buf, force_terminal=True,
                               color_system="truecolor", width=_width())
             chat_view.render_system_notice(con, "warn", "已中断(esc)")
-            print(buf.getvalue().rstrip("\n"))
+            self._commit(Text.from_ansi(buf.getvalue().rstrip("\n")))
         r.close(tools_used=getattr(self.cli.agent, "last_tool_call_count", 0),
                 elapsed_seconds=time.monotonic() - start,
                 tokens_in=tok["in"], tokens_out=tok["out"])
@@ -218,7 +226,8 @@ class LiveSession:
                 return
             print(f"\n❯ {text}")                 # 回显用户输入进 scrollback
             if text.startswith("/"):
-                # slash 命令:挂起 app 调现有 handle_command(临时;交互式命令体验留后续)
+                # slash 命令:挂起 app 调现有 handle_command(临时;交互式命令体验留后续)。
+                # run_in_terminal 返回的 future 故意 fire-and-forget(同步命令即可)。
                 cmd = text
                 run_in_terminal(lambda: self.cli.handle_command(cmd))
                 return
@@ -233,6 +242,9 @@ class LiveSession:
         @kb.add("c-c")
         @kb.add("c-d")
         def _(event):
+            # 退出前置 cancel,让在跑的 agent.run 经 should_cancel 尽快收尾,
+            # 否则不可取消的 to_thread 会拖住 asyncio.run 关停(C1)。
+            self.state["cancel"] = True
             event.app.exit()
 
         active = Window(FormattedTextControl(self._active_fragments),
@@ -263,6 +275,11 @@ class LiveSession:
             try:
                 await self.app.run_async()
             finally:
+                # 退出时若工作线程正阻塞在审批 Future 上,立刻解为 False,
+                # 否则它会一直等到 _APPROVAL_TIMEOUT_S 才返回,拖住关停(C1)。
+                pend = self._pending_fut
+                if pend is not None and not pend.done():
+                    pend.set_result(False)
                 spin.cancel()
                 work.cancel()
 
