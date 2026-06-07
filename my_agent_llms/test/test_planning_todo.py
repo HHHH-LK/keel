@@ -103,3 +103,89 @@ def test_empty_todo_not_injected(monkeypatch):
     agent = _make_agent(monkeypatch, [_text_response("done")], todo_store=TodoStore())
     agent.run("t")
     assert not any(TODO_HEADING in m.get("content", "") for m in agent._captured[0])
+
+
+# ── 结构闸门:禁止"边执行改动边预先打勾" ─────────────────────────
+import json
+from my_agent_llms.tools.base import Tool
+from my_agent_llms.tools.registry import ToolRegistry
+from my_agent_llms.agents.function_call_agent import MyFunctionCallAgent
+
+
+class _FakeEdit(Tool):
+    """假的改动类工具:side_effect_free=False,代表 Edit/Bash 这类有副作用动作。"""
+    def __init__(self):
+        super().__init__("edit", "fake mutating tool")
+        self.side_effect_free = False
+
+    def run(self, parameters):
+        return "edited"
+
+    def get_parameters(self):
+        return []
+
+
+def _gate_agent(store):
+    a = MyFunctionCallAgent.__new__(MyFunctionCallAgent)
+    reg = ToolRegistry()
+    reg.register_tool(WriteTodoTool(store))
+    reg.register_tool(_FakeEdit())
+    a.tool_registry = reg
+    a.todo_store = store
+    a.tool_timeout = None
+    a._turn_mutated = False
+    return a
+
+
+def _tc(call_id, name, args):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(args)))
+
+
+def _run_batch(agent, calls):
+    msgs = []
+    agent._execute_tool_calls(
+        calls, msgs,
+        on_tool_call=None, on_permission_request=None, on_tool_result=None)
+    return msgs
+
+
+def test_gate_vetoes_completion_in_same_turn_as_work():
+    """同一轮既 edit 又把步骤标 completed → 否决,store 不被预先打勾。"""
+    s = TodoStore()
+    s.set([{"content": "step1", "status": "in_progress"},
+           {"content": "step2", "status": "pending"}])
+    agent = _gate_agent(s)
+    msgs = _run_batch(agent, [
+        _tc("1", "edit", {"path": "a"}),
+        _tc("2", "write_todo", {"todos": ["completed|step1", "in_progress|step2"]}),
+    ])
+    assert s.items[0]["status"] == "in_progress"          # 没被预先打勾
+    todo_msg = next(m for m in msgs if m.get("tool_call_id") == "2")
+    assert "⛔" in todo_msg["content"]                     # 回喂了阻止说明
+
+
+def test_gate_allows_completion_in_todo_only_turn():
+    """只调 write_todo(没改动工具)→ completed 正常生效。"""
+    s = TodoStore()
+    s.set([{"content": "step1", "status": "in_progress"}])
+    agent = _gate_agent(s)
+    _run_batch(agent, [_tc("1", "write_todo", {"todos": ["completed|step1"]})])
+    assert s.items[0]["status"] == "completed"
+
+
+def test_gate_allows_in_progress_alongside_work():
+    """edit + 把下一步标 in_progress(无新增 completed)→ 不否决。"""
+    s = TodoStore()
+    s.set([{"content": "step1", "status": "completed"},
+           {"content": "step2", "status": "pending"}])
+    agent = _gate_agent(s)
+    _run_batch(agent, [
+        _tc("1", "edit", {}),
+        # step1 原本就 completed(原样带回,非新增)→ 不触发;step2 转 in_progress
+        _tc("2", "write_todo", {"todos": ["completed|step1", "in_progress|step2"]}),
+    ])
+    assert s.items[0]["status"] == "completed"
+    assert s.items[1]["status"] == "in_progress"

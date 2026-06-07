@@ -13,6 +13,19 @@ _MARK = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
 TODO_HEADING = "## 当前任务清单(进度)"
 
 
+def parse_todo_lines(raw):
+    """把 ['status|内容', ...] 解析成 [{content, status}](空内容丢弃)。
+    单源真相:WriteTodoTool 落库与 agent 结构闸门共用,避免两处解析跑偏。"""
+    items = []
+    for line in raw or []:
+        s, sep, c = str(line).partition("|")
+        if sep and c.strip():
+            items.append({"content": c.strip(), "status": s.strip() or "pending"})
+        elif s.strip():
+            items.append({"content": s.strip(), "status": "pending"})
+    return items
+
+
 class TodoStore:
     """进程内计划状态:每项 {content, status}。整体覆盖式更新。"""
 
@@ -48,15 +61,7 @@ class WriteTodoTool(Tool):
         self.side_effect_free = False
 
     def run(self, parameters):
-        raw = parameters.get("todos") or []
-        items = []
-        for line in raw:
-            s, sep, c = str(line).partition("|")
-            if sep and c.strip():
-                items.append({"content": c.strip(), "status": s.strip() or "pending"})
-            elif s.strip():
-                items.append({"content": s.strip(), "status": "pending"})
-        self.store.set(items)
+        self.store.set(parse_todo_lines(parameters.get("todos")))
         return self.store.render() or "(清单已清空)"
 
     def get_parameters(self):

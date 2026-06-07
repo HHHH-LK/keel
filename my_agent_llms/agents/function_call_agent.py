@@ -449,6 +449,9 @@ class MyFunctionCallAgent(Agent):
                     attempts += 1
             plans.append(plan)
 
+        # ── 结构闸门:否决"边执行改动边预先打勾"(看到结果前不许标 completed)──
+        self._veto_premature_completions(plans)
+
         # ── Phase B:执行。白名单并行,其余按原顺序串行 ──
         timeout = getattr(self, "tool_timeout", None)
         to_exec = [p for p in plans if p["execute"]]
@@ -505,6 +508,39 @@ class MyFunctionCallAgent(Agent):
                     logger.exception("on_tool_result 回调异常,忽略不影响主流程")
 
         return attempts
+
+    def _veto_premature_completions(self, plans: List[Dict[str, Any]]) -> None:
+        """结构闸门:同一轮里既执行【改动类】工具、又想把某步标 completed → 否决该 write_todo。
+
+        根因:completed 全靠模型自报、与真实执行结果零绑定;模型可在看到工具结果前
+        就在同一轮预先打勾。这里硬性拆开「做」与「打勾」:有改动工具在跑时,write_todo
+        里【新增】的 completed 一律否决(原样带回的已完成项不算),回喂纠正文案让模型下一轮
+        看到结果后再单独标。只读工具(side_effect_free)不算改动,不触发本闸门。"""
+        store = getattr(self, "todo_store", None)
+        if store is None:
+            return
+        has_work = any(
+            p["execute"] and p["name"] != "write_todo"
+            and not self._tool_is_side_effect_free(p["name"])
+            for p in plans)
+        if not has_work:
+            return
+        from my_agent_llms.planning.todo import parse_todo_lines
+        prev = {it["content"]: it["status"] for it in store.items}
+        for p in plans:
+            if p["name"] != "write_todo" or not p["execute"]:
+                continue
+            incoming = parse_todo_lines((p["args"] or {}).get("todos"))
+            new_done = [it["content"] for it in incoming
+                        if it["status"] == "completed"
+                        and prev.get(it["content"]) != "completed"]
+            if new_done:
+                p["execute"] = False
+                p["result"] = (
+                    "⛔ 本轮你正在执行改动类动作,不能同时把步骤标 completed:"
+                    + "、".join(new_done)
+                    + "。请先看到这些动作的工具结果、确认这步真的成功了,下一轮再单独调 "
+                    "write_todo 标 completed(现在可以只把下一步标 in_progress,但别预先打勾)。")
 
     def _build_tool_schemas(self) -> List[Dict[str, Any]]:
         return self.tool_registry.to_openai_schemas()
