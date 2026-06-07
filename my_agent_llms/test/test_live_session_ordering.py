@@ -1,0 +1,53 @@
+"""#4 重影根因修复的契约测试:_commit 与 _set_active 必须【按序经同一条 loop 队列】。
+
+真重影/粘连只在 tty 复现、无法自动测;但根因是"提交走 patch_stdout 异步批量代理、
+活跃区走即时 invalidate,两者乱序竞争"。这里锁住修复的不变量:两个操作都不在调用线程
+直接动终端,而是按调用顺序排进 loop —— commit 先、set_active 后。
+"""
+import io
+
+from rich.text import Text
+
+from my_agent_llms.cli.live_session import LiveSession
+
+
+class _FakeLoop:
+    def __init__(self):
+        self.scheduled = []
+
+    def call_soon_threadsafe(self, fn, *args):
+        self.scheduled.append((getattr(fn, "__name__", "fn"), args))
+
+
+def _bare_session():
+    sess = LiveSession.__new__(LiveSession)   # 跳过 __init__,只装契约需要的字段
+    sess._loop = _FakeLoop()
+    sess.app = None
+    sess._real_out = io.StringIO()
+    sess._active = ("", "text", False)
+    return sess
+
+
+def test_commit_schedules_through_loop_not_direct_print():
+    sess = _bare_session()
+    sess._commit(Text("完成块"))
+    assert len(sess._loop.scheduled) == 1
+    assert sess._loop.scheduled[0][0] == "_emit_scrollback"
+
+
+def test_commit_then_set_active_preserve_order_on_loop():
+    sess = _bare_session()
+    sess._commit(Text("完成块"))
+    sess._set_active("残块", "text", True)
+    names = [n for n, _ in sess._loop.scheduled]
+    # 都进了 loop,且 commit 排在 set_active 前面(不会被反超 → 不粘连/不重影)
+    assert len(names) == 2
+    assert names[0] == "_emit_scrollback"
+
+
+def test_set_active_defers_state_mutation_to_loop():
+    sess = _bare_session()
+    sess._set_active("残块", "text", True)
+    # 活跃区状态不在调用线程直接改,而是排进 loop(由 loop 线程一并 set+invalidate)
+    assert sess._active == ("", "text", False)     # 尚未应用
+    assert len(sess._loop.scheduled) == 1

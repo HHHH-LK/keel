@@ -22,6 +22,7 @@ import concurrent.futures
 import io
 import os
 import shutil
+import sys
 import time
 from functools import partial
 from typing import Dict, Optional
@@ -134,20 +135,48 @@ class LiveSession:
         self._pending_fut: "Optional[concurrent.futures.Future[bool]]" = None
         self.app: Optional[Application] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._real_out = sys.stdout          # 真 stdout(patch_stdout 前捕获,_main 再确认)
 
     # ── 渲染 sink(交给 ScrollbackRenderer)────────────────────
+    # #4 重影根因:提交走 patch_stdout 的异步/批量/独立线程代理(缓冲到换行才刷、
+    # 0.2s 批量),活跃区走即时 invalidate —— 二者乱序竞争同一底部变高区域,造成
+    # 活跃区塌缩不擦(重影)+ 换行被吞(两轮粘连)。修法:两者都【按调用序排进
+    # 事件循环】,提交经 run_in_terminal(擦 app→写 scrollback→重画 app)原子落地,
+    # 且写真 stdout 绕开批量代理。
     def _commit(self, text_obj: Text) -> None:
-        # 工作线程经 patch_stdout(raw) print 进 scrollback。print 异常(并发重绘下
-        # 偶发)不得中断当前轮 —— 吞掉,丢这一块好过崩整轮(I2)。
+        s = _to_ansi(text_obj, _width())
+        loop = self._loop
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._emit_scrollback, s)
+
+    def _emit_scrollback(self, s: str) -> None:
+        """在 loop 线程经 run_in_terminal 把一块文本原子写进真 scrollback。"""
+        out = self._real_out
+
+        def _write() -> None:
+            out.write(s + "\n")
+            out.flush()
+
         try:
-            print(_to_ansi(text_obj, _width()))
+            run_in_terminal(_write, in_executor=False)
         except Exception:
             pass
 
     def _set_active(self, src: str, mode: str, dot: bool) -> None:
-        self._active = (src, mode, dot)              # 单次原子赋值(I1)
-        if self.app is not None:
-            self.app.invalidate()
+        # 与 _commit 同走一条 loop 队列,严格保序(先提交块、后更新残块),
+        # 不被代理刷新反超 → 残块不会盖到已提交块上/下方。
+        loop = self._loop
+        if loop is None:
+            self._active = (src, mode, dot)
+            return
+
+        def _apply() -> None:
+            self._active = (src, mode, dot)      # 单次原子赋值(I1)
+            if self.app is not None:
+                self.app.invalidate()
+
+        loop.call_soon_threadsafe(_apply)
 
     # ── app 内 Window 内容回调 ────────────────────────────────
     def _active_fragments(self):
@@ -334,7 +363,7 @@ class LiveSession:
             if text in ("/quit", "/exit"):
                 event.app.exit()
                 return
-            print(f"\n❯ {text}")                 # 回显用户输入进 scrollback
+            self._emit_scrollback(f"\n❯ {text}")  # 回显用户输入进 scrollback(同一原子路径)
             if text.startswith("/"):
                 # slash 命令:挂起 app 调现有 handle_command(临时;交互式命令体验留后续)。
                 # run_in_terminal 返回的 future 故意 fire-and-forget(同步命令即可)。
@@ -424,6 +453,7 @@ class LiveSession:
 
     async def _main(self):
         self._loop = asyncio.get_running_loop()
+        self._real_out = sys.stdout          # patch_stdout 前的真 stdout,提交直写它绕开批量代理
         queue: "asyncio.Queue[str]" = asyncio.Queue()
         self.app = self._build_app(queue)
         with patch_stdout(raw=True):
