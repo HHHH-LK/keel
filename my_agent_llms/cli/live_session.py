@@ -1,0 +1,281 @@
+"""并发常驻 UI(Claude Code 风):底部圆角输入框常驻,agent 在后台线程跑,
+输出经 patch_stdout(raw=True) 流进真 scrollback,活跃块在 app 内 diff 渲染。
+
+仅 tty 启用;由 ChatCLI.run 调用(非 tty / MYAI_LEGACY_UI / 异常 → 回退串行)。
+
+渲染分层(= Claude Code 的 Ink <Static> + 底部活跃区):
+  - 完成块:ScrollbackRenderer 渲成 Rich Text → _to_ansi → print 进 scrollback(一次,不重画)
+  - 正在生成的 thinking/正文:写 state["active"] + app.invalidate(),在 app 内 Window diff 渲染(不抖)
+
+并发桥:
+  - agent.run() 是同步阻塞 + 回调式 → 跑在 asyncio.to_thread 的工作线程
+  - 回调(工作线程)→ print(线程安全 via patch_stdout 代理) + app.invalidate()(线程安全)
+  - esc → key binding 置 cancel 标志 → agent.run(should_cancel=…) 逐 chunk/步级中断
+  - 审批 → 工作线程把审批调度回事件循环(call_soon_threadsafe)并阻塞在 Future 上等结果
+
+本阶段审批走临时 run_in_terminal(挂起 app 调现有审批框);正式浮层留 Phase 3。
+"""
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import io
+import shutil
+import time
+from functools import partial
+from typing import Dict, Optional
+
+from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.formatted_text import ANSI, HTML
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension as D
+from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import TextArea
+from rich.console import Console as RichConsole
+from rich.text import Text
+
+from . import chat_view, theme
+from .markdown_render import render_markdown
+from .permission import TerminalNotInteractiveError, prompt_permission
+from .permission_grants import decide
+from .scrollback_renderer import ScrollbackRenderer
+
+_SPIN = ["✻", "✲", "✳", "✴", "✵", "✶", "✷"]
+
+
+def _width() -> int:
+    return max(20, shutil.get_terminal_size((80, 24)).columns - 2)
+
+
+def _to_ansi(text_obj: Text, w: int) -> str:
+    """Rich Text → 带 ANSI 配色的字符串(供 print 进 scrollback / 包成 ANSI 喂 ptk)。"""
+    buf = io.StringIO()
+    RichConsole(file=buf, force_terminal=True, color_system="truecolor",
+                width=w).print(text_obj)
+    return buf.getvalue().rstrip("\n")
+
+
+def _preview(args: Dict) -> str:
+    """工具参数 → 'k=v, k=v' 预览(取前 3 个)。"""
+    try:
+        return ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
+    except Exception:
+        return ""
+
+
+class LiveSession:
+    """一个常驻 prompt_toolkit Application;每条用户输入起一轮 agent.run(后台线程)。"""
+
+    def __init__(self, cli):
+        self.cli = cli                       # ChatCLI(持 self.agent / self.grants)
+        self.state = {"busy": False, "spin": 0, "cancel": False,
+                      "active": "", "mode": "text", "dot": False}
+        self.app: Optional[Application] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    # ── 渲染 sink(交给 ScrollbackRenderer)────────────────────
+    def _commit(self, text_obj: Text) -> None:
+        print(_to_ansi(text_obj, _width()))          # patch_stdout(raw) → scrollback
+
+    def _set_active(self, src: str, mode: str, dot: bool) -> None:
+        self.state.update(active=src, mode=mode, dot=dot)
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _emit_text(self, text_obj: Text) -> None:
+        """直接 print 一个 Rich Text 到 scrollback(供 system notice / 错误等用)。"""
+        print(_to_ansi(text_obj, _width()))
+
+    # ── app 内 Window 内容回调 ────────────────────────────────
+    def _active_fragments(self):
+        src = self.state["active"]
+        if not src:
+            return []
+        w = _width()
+        if self.state["mode"] == "reasoning":
+            framed = chat_view._render_thinking(src)
+        else:
+            body = render_markdown(src, w)
+            framed = (chat_view._step_lines_from_text(body, theme.DEFAULT)
+                      if not self.state["dot"] else chat_view._indent_only(body))
+        return ANSI(_to_ansi(chat_view._tail_cap(framed, 18), w))
+
+    def _status_fragments(self):
+        if self.state["busy"]:
+            head = f"{_SPIN[self.state['spin'] % len(_SPIN)]} 生成中…  (esc 中断)"
+        else:
+            head = "● 就绪"
+        return [("class:status", f"  {head}")]
+
+    # ── 审批:工作线程 → 事件循环 → 阻塞等结果 ───────────────────
+    def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
+        """从工作线程调用。把审批调度回事件循环线程,阻塞等 Future。
+
+        临时实现(Phase 3 换应用内浮层):run_in_terminal 挂起常驻 app,
+        复用现有 decide()/prompt_permission(三态 y/n/记住)。任何异常 → 安全拒绝。
+        """
+        fut: "concurrent.futures.Future[bool]" = concurrent.futures.Future()
+
+        async def _coro():
+            def _ask() -> bool:
+                try:
+                    return bool(decide(self.cli.grants, prompt_permission,
+                                       name, args, preview))
+                except TerminalNotInteractiveError:
+                    return False
+            try:
+                ok = await run_in_terminal(_ask)
+            except Exception:
+                ok = False
+            if not fut.done():
+                fut.set_result(ok)
+
+        if self._loop is None:
+            return False
+        self._loop.call_soon_threadsafe(lambda: self._loop.create_task(_coro()))
+        try:
+            return fut.result(timeout=300)
+        except Exception:
+            return False
+
+    # ── 一轮:在后台线程跑 agent.run ──────────────────────────
+    def _run_turn(self, user_input: str) -> None:
+        r = ScrollbackRenderer(self._commit, self._set_active, _width)
+        start = time.monotonic()
+        tok = {"in": 0, "out": 0}
+
+        def on_llm_done(elapsed, pt, ct):
+            tok["in"] += pt or 0
+            tok["out"] += ct or 0
+
+        try:
+            self.cli.agent.run(
+                user_input,
+                on_text_chunk=r.text_chunk,
+                on_reasoning_chunk=r.reasoning_chunk,
+                on_tool_call=lambda n, a: r.tool_call(n, _preview(a)),
+                on_tool_result=lambda n, res, el: r.tool_result(res, elapsed_sec=el),
+                on_permission_request=self._on_permission,
+                on_llm_done=on_llm_done,
+                should_cancel=lambda: self.state["cancel"],
+            )
+        except Exception as exc:
+            self._emit_text(chat_view._continuation_lines(f"❌ {exc}", theme.ERR))
+        if self.state["cancel"]:
+            buf = io.StringIO()
+            con = RichConsole(file=buf, force_terminal=True,
+                              color_system="truecolor", width=_width())
+            chat_view.render_system_notice(con, "warn", "已中断(esc)")
+            print(buf.getvalue().rstrip("\n"))
+        r.close(tools_used=getattr(self.cli.agent, "last_tool_call_count", 0),
+                elapsed_seconds=time.monotonic() - start,
+                tokens_in=tok["in"], tokens_out=tok["out"])
+        self.state.update(busy=False, active="")
+        if self.app is not None:
+            self.app.invalidate()
+
+    async def _worker(self, queue: "asyncio.Queue[str]"):
+        try:
+            while True:
+                line = await queue.get()
+                self.state.update(busy=True, cancel=False)
+                if self.app is not None:
+                    self.app.invalidate()
+                await asyncio.to_thread(self._run_turn, line)   # agent 同步阻塞 → 线程
+                queue.task_done()
+        except asyncio.CancelledError:
+            pass
+
+    async def _spinner_loop(self):
+        try:
+            while True:
+                if self.state["busy"]:
+                    self.state["spin"] += 1
+                    if self.app is not None:
+                        self.app.invalidate()
+                await asyncio.sleep(0.15)
+        except asyncio.CancelledError:
+            pass
+
+    # ── app 构建 ─────────────────────────────────────────────
+    def _build_app(self, queue: "asyncio.Queue[str]"):
+        ta = TextArea(multiline=False, wrap_lines=True,
+                      prompt=HTML("<arrow>❯ </arrow>"))
+        kb = KeyBindings()
+
+        @kb.add("enter")
+        def _(event):
+            text = ta.text.strip()
+            ta.text = ""
+            if not text:
+                return
+            if text in ("/quit", "/exit"):
+                event.app.exit()
+                return
+            print(f"\n❯ {text}")                 # 回显用户输入进 scrollback
+            if text.startswith("/"):
+                # slash 命令:挂起 app 调现有 handle_command(临时;交互式命令体验留后续)
+                cmd = text
+                run_in_terminal(lambda: self.cli.handle_command(cmd))
+                return
+            queue.put_nowait(text)               # 普通输入 → 排队给 agent
+            event.app.invalidate()
+
+        @kb.add("escape")
+        def _(event):
+            if self.state["busy"]:
+                self.state["cancel"] = True
+
+        @kb.add("c-c")
+        @kb.add("c-d")
+        def _(event):
+            event.app.exit()
+
+        active = Window(FormattedTextControl(self._active_fragments),
+                        wrap_lines=True, dont_extend_height=True,
+                        height=D(min=0, max=12))
+        status = Window(FormattedTextControl(self._status_fragments), height=1)
+        fill = partial(Window, style="class:frame.border")
+        top = VSplit([fill(width=1, height=1, char="╭"), fill(char="─"),
+                      fill(width=1, height=1, char="╮")], height=1)
+        bottom = VSplit([fill(width=1, height=1, char="╰"), fill(char="─"),
+                         fill(width=1, height=1, char="╯")], height=1)
+        middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
+                         Window(width=1), fill(width=1, char="│")])
+        root = HSplit([active, HSplit([top, middle, bottom]), status])
+        style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
+                                 "status": "gray"})
+        return Application(layout=Layout(root, focused_element=ta),
+                           key_bindings=kb, style=style,
+                           full_screen=False, mouse_support=False)
+
+    async def _main(self):
+        self._loop = asyncio.get_running_loop()
+        queue: "asyncio.Queue[str]" = asyncio.Queue()
+        self.app = self._build_app(queue)
+        with patch_stdout(raw=True):
+            spin = asyncio.create_task(self._spinner_loop())
+            work = asyncio.create_task(self._worker(queue))
+            try:
+                await self.app.run_async()
+            finally:
+                spin.cancel()
+                work.cancel()
+
+    def run(self) -> None:
+        self.cli.print_banner()
+        asyncio.run(self._main())
+        if self.cli.agent is not None:
+            try:
+                self.cli.agent.memory.close()
+            except Exception:
+                pass
+
+
+def run(cli) -> None:
+    """入口:ChatCLI.run 在 tty 路径调用。"""
+    LiveSession(cli).run()
