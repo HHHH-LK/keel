@@ -67,11 +67,16 @@ class ScrollbackRenderer:
         self._text_buf += chunk
         committable, remainder = chat_view._split_committable(self._text_buf)
         if committable.strip():
-            block = self._render_md(committable, with_dot=not self._dot)
-            (self._commit_step if not self._dot else self._commit)(block)
+            first = not self._dot
+            block = self._render_md(committable, with_dot=first)
             self._dot = True
             self._text_buf = remainder
-        self._set_active(self._text_buf, "text", self._dot)
+            # 先把活跃区收缩到 remainder(committable 已不在活跃帧里),再提交块 ——
+            # 否则提交那一刻活跃帧仍含 committable,真终端会留下重复行。
+            self._set_active(remainder, "text", self._dot)
+            (self._commit_step if first else self._commit)(block)
+        else:
+            self._set_active(self._text_buf, "text", self._dot)
 
     def reasoning_chunk(self, chunk: str) -> None:
         if not chunk:
@@ -88,11 +93,14 @@ class ScrollbackRenderer:
             self._close_reasoning()
         self._flush_group()
         buf, self._text_buf = self._text_buf, ""
-        if buf.strip():
-            block = self._render_md(buf, with_dot=not self._dot)
-            (self._commit_step if not self._dot else self._commit)(block)
-            self._dot = True
+        first = not self._dot
+        # 先清空活跃区,再提交残块 —— 否则收尾时"活跃帧那一行"与"已提交的同一行"
+        # 在真终端里同时存在 → 最后一行重复(用户实测到的末行重影)。
         self._set_active("", "text", self._dot)
+        if buf.strip():
+            block = self._render_md(buf, with_dot=first)
+            self._dot = True
+            (self._commit_step if first else self._commit)(block)
 
     def tool_call(self, name: str, args_preview: str = "",
                   read_only: bool = False) -> None:

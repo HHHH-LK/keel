@@ -103,6 +103,37 @@ def test_text_after_tool_starts_new_step_with_blank_and_dot():
     assert plains[idx - 1] == ""                    # 前有空行分隔
 
 
+def test_flush_text_clears_active_before_committing_remainder():
+    # 收尾时:必须先清空活跃区,再把残块提交进 scrollback —— 否则真终端里
+    # "活跃区那一帧" 与 "已提交的同一段" 同时存在 → 最后一行重复(tty 重影)。
+    events = []
+    r = ScrollbackRenderer(
+        commit=lambda t: events.append(("commit", t.plain)),
+        set_active=lambda s, m, d: events.append(("active", s)),
+        width=lambda: 70)
+    r.text_chunk("尾巴一行没有空行")        # 无块边界 → 整段留活跃区
+    r.close()
+    commit_idx = next(i for i, (k, v) in enumerate(events)
+                      if k == "commit" and "尾巴" in v)
+    # 提交残块之前,应已出现一次清空活跃区(active == "")
+    assert any(k == "active" and v == "" for k, v in events[:commit_idx])
+
+
+def test_text_chunk_shrinks_active_before_committing_block():
+    # 流式提交块时:先把活跃区收缩到 remainder(不再含已提交内容),再提交块 ——
+    # 否则提交那一刻活跃帧里还含 committable → 该段重复(下文覆盖上文/行重复)。
+    events = []
+    r = ScrollbackRenderer(
+        commit=lambda t: events.append(("commit", t.plain)),
+        set_active=lambda s, m, d: events.append(("active", s)),
+        width=lambda: 70)
+    r.text_chunk("第一段\n\n剩余进行中")
+    commit_idx = next(i for i, (k, v) in enumerate(events)
+                      if k == "commit" and "第一段" in v)
+    actives_before = [v for k, v in events[:commit_idx] if k == "active"]
+    assert actives_before and "第一段" not in actives_before[-1]
+
+
 def test_group_flushes_when_different_tool_arrives():
     r, commits, actives = _make()
     r.tool_call("Read", "path=a.py", read_only=True)
