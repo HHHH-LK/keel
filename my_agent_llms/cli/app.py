@@ -320,8 +320,9 @@ def build_agent(cfg: Dict) -> Optional[MyFunctionCallAgent]:
                 " \"用户拒绝了对 X 的调用\",请结合上下文道歉/改方案/继续聊。\n"
                 "\n## 任务规划\n"
                 "简单/单步任务直接做,不要用 write_todo。"
-                "复杂多步任务(多文件/多步骤/易遗漏)先用 write_todo 列分步计划,"
-                "每完成一步就更新其 status。\n"
+                "复杂多步任务(多文件/多步骤/易遗漏)先用 write_todo 列分步计划。"
+                "**每做完一步,立刻再调一次 write_todo 把那步标成 completed、下一步标 "
+                "in_progress,然后才继续**——不要等全部做完才一次性更新,用户要靠这个看实时打勾。\n"
             ),
             memory_config=memory_config,
             max_steps=1000,

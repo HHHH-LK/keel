@@ -72,4 +72,7 @@ def todo_system_message(store: Optional[TodoStore]) -> Optional[dict]:
     text = store.render()
     if not text:
         return None
-    return {"role": "system", "content": text + "\n(完成一步请用 write_todo 更新其 status)"}
+    return {"role": "system", "content": text + (
+        "\n规则:每做完一步,**立刻**再调一次 write_todo,把那一步的 status 改成 "
+        "completed,并把下一步置为 in_progress —— 然后才继续。不要攒到最后才一次性更新;"
+        "用户要靠这个看到实时打勾。")}
