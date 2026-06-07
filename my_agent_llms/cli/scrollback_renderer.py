@@ -70,17 +70,26 @@ class ScrollbackRenderer:
             self._dot = True
         self._set_active("", "text", self._dot)
 
-    def tool_call(self, name: str, args_preview: str = "") -> None:
+    def tool_call(self, name: str, args_preview: str = "",
+                  read_only: bool = False) -> None:
         self._opened = True
         self._flush_text()
-        self._pending = (name, args_preview)
+        self._pending = (name, args_preview, read_only)
 
     def tool_result(self, text: str, *, elapsed_sec=None) -> None:
         if not text:
             return
-        name, preview = getattr(self, "_pending", ("", ""))
-        self._pending = ("", "")
-        color = chat_view._result_dot_color(text)
+        name, preview, read_only = getattr(self, "_pending", ("", "", False))
+        self._pending = ("", "", False)
+        # Claude Code 风:出错→红;只读工具→中性(不上色);改动类成功→绿。
+        # 即"不是所有工具都变色",只有改动类成败/任何出错才染色。
+        stripped = text.lstrip()
+        if stripped.startswith("❌") or "拒绝" in stripped:
+            color = theme.ERR
+        elif read_only:
+            color = theme.DEFAULT
+        else:
+            color = theme.OK
         self._commit(chat_view._tool_notice_lines(name, preview, color))
         body = text.rstrip("\n")
         if elapsed_sec is not None:

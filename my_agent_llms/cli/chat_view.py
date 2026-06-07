@@ -158,18 +158,18 @@ def _step_lines(text_or_ansi: str, dot_color: str, *,
 
 
 def _result_dot_color(text: str) -> str:
-    """工具结果 ⏺ 颜色(Claude Code 风:完成即绿,出错才红)。
+    """工具结果 ⏺ 颜色(serial 路径用;出错→红,其余→中性默认)。
 
-    出错信号:agent 把工具异常包成 '❌ 工具 … 执行异常'、拒绝包成含'拒绝'的串
-    (见 function_call_agent),故 ❌/拒绝 → 红;其余(含普通成功输出,不要求 ✅
-    前缀)→ 绿。空结果也按完成算绿。
+    "不是所有工具都变色":只有出错(❌/拒绝)才红,成功保持中性。改动类成功染绿
+    的"只读 vs 改动"区分需要工具元信息(side_effect_free),在 live 路径
+    (scrollback_renderer + live_session)里做;serial 仅做错→红、其余中性。
     """
     if not text:
-        return theme.OK
+        return theme.DEFAULT
     stripped = text.lstrip()
     if stripped.startswith("❌") or "拒绝" in stripped:
         return theme.ERR
-    return theme.OK
+    return theme.DEFAULT
 
 
 def _continuation_lines(text: str, color: str, *, more: int = 0) -> Text:

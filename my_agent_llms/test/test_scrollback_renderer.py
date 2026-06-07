@@ -92,3 +92,24 @@ def test_tool_error_dot_is_red():
     r.tool_result("❌ 工具 'EditFile' 执行异常: boom")
     notice = commits[0]
     assert any(theme.ERR in str(s.style) for s in notice.spans)
+
+
+def test_tool_readonly_dot_is_neutral():
+    # 只读工具(side_effect_free)成功 → ⏺ 中性(不绿不红)
+    from my_agent_llms.cli import theme
+    r, commits, actives = _make()
+    r.tool_call("ReadFile", "path=x", read_only=True)
+    r.tool_result("文件内容若干行")
+    notice = commits[0]
+    assert not any(theme.OK in str(s.style) or theme.ERR in str(s.style)
+                   for s in notice.spans)
+
+
+def test_tool_mutating_success_dot_is_green():
+    # 改动类工具(非只读)成功 → 绿
+    from my_agent_llms.cli import theme
+    r, commits, actives = _make()
+    r.tool_call("EditFile", "config.py", read_only=False)
+    r.tool_result("已写入 3 行")
+    notice = commits[0]
+    assert any(theme.OK in str(s.style) for s in notice.spans)
