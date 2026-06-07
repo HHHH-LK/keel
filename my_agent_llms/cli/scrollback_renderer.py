@@ -29,6 +29,10 @@ class ScrollbackRenderer:
         self._mode = "text"           # text | reasoning
         self._dot = False             # 本 text 段是否已发出 ⏺ 头
         self._opened = False
+        # 待结果配对的工具 notice FIFO 队列(name, preview, read_only)。
+        # 必须是队列:agent Phase A 先把同轮所有 tool_call 入队,Phase C 再按序
+        # tool_result —— 单槽会被后来的覆盖,导致前面的名字/只读标志丢失。
+        self._pending: list = []
 
     # ── 渲染 ──
     def _render_md(self, src: str, *, with_dot: bool) -> Text:
@@ -74,7 +78,7 @@ class ScrollbackRenderer:
                   read_only: bool = False) -> None:
         self._opened = True
         self._flush_text()
-        self._pending = (name, args_preview, read_only)
+        self._pending.append((name, args_preview, read_only))
 
     def tool_result(self, text: str, *, elapsed_sec=None,
                     max_lines: int = 4, max_line_chars: int = 300) -> None:
@@ -85,8 +89,10 @@ class ScrollbackRenderer:
         """
         if not text:
             return
-        name, preview, read_only = getattr(self, "_pending", ("", "", False))
-        self._pending = ("", "", False)
+        if self._pending:
+            name, preview, read_only = self._pending.pop(0)   # FIFO 配对
+        else:
+            name, preview, read_only = "", "", False
         # ⏺ 颜色:出错→红;只读→中性;改动类成功→绿。
         stripped = text.lstrip()
         if stripped.startswith("❌") or "拒绝" in stripped:

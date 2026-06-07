@@ -143,3 +143,18 @@ def test_write_todo_renders_update_todos():
     out = "\n".join(c.plain for c in commits)
     assert "Update Todos" in out
     assert "☑" in out and "☐" in out
+
+
+def test_multi_tool_round_fifo_pairs_names_and_readonly():
+    # agent:Phase A 全部 tool_call 入队,Phase C 全部 tool_result。
+    # 单槽会丢名/丢 read_only;必须 FIFO 队列。
+    r, commits, actives = _make()
+    r.tool_call("Read", "a.py", read_only=True)     # Phase A
+    r.tool_call("Bash", "ls", read_only=False)
+    r.tool_result("文件内容")                        # Phase C → 配 Read
+    r.tool_result("✅ done")                          # → 配 Bash
+    notices = [c.plain for c in commits if c.plain.startswith("⏺")]
+    joined = "\n".join(c.plain for c in commits)
+    assert "Read(a.py)" in joined                     # 第一个名字在
+    assert "Bash(ls)" in joined                       # 第二个名字没丢
+    assert all(n.strip() != "⏺" for n in notices)     # 没有空 ⏺
