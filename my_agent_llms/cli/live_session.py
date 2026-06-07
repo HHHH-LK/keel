@@ -276,7 +276,8 @@ class LiveSession:
         # 钉 height=1:跟 top/bottom 一致,否则两侧 │ 竖条会竖向撑高、把输入框抻成多行。
         middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
                          Window(width=1), fill(width=1, char="│")], height=1)
-        root = HSplit([active, HSplit([top, middle, bottom]), status])
+        # 状态行(✻ 生成中…)放输入框【上方】;输入框作为最后一个元素(下方无窗口)。
+        root = HSplit([active, status, HSplit([top, middle, bottom])])
         style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
                                  "status": "gray"})
         return Application(layout=Layout(root, focused_element=ta),
