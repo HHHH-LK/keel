@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Tuple
+from typing import Callable
 
 from rich.text import Text
 
@@ -53,7 +53,10 @@ class ScrollbackRenderer:
         self._set_active(self._text_buf, "text", self._dot)
 
     def _close_reasoning(self) -> None:
+        # 收尾思考段总是切回 text 模式 —— 在此自洽复位,避免被 close()/tool_call 等
+        # 独立调用后 _mode 残留 "reasoning"(否则下个 text_chunk 会误触二次 close)。
         buf, self._reason_buf = self._reason_buf, ""
+        self._mode = "text"
         if buf.strip():
             self._commit(chat_view._render_thinking(buf))
         self._set_active("", "text", self._dot)

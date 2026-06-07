@@ -22,3 +22,14 @@ def test_text_commits_completed_block_keeps_remainder_active():
     assert not any("第二段" in c.plain for c in commits)
     assert actives[-1][0] == "第二段进行中"
     assert actives[-1][1] == "text"
+
+
+def test_close_reasoning_commits_thinking_block_on_text_chunk():
+    # reasoning 段在切到 text 时折叠 commit;_mode 复位为 text
+    r, commits, actives = _make()
+    r._mode = "reasoning"
+    r._reason_buf = "我先想一下"
+    r.text_chunk("正式回答")
+    assert any("我先想一下" in c.plain for c in commits)   # _close_reasoning 已 commit
+    assert r._mode == "text"
+    assert actives[-1][1] == "text"
