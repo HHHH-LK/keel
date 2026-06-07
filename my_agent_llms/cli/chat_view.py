@@ -41,6 +41,40 @@ def _step_lines_from_text(text_obj: Text, dot_color: str) -> Text:
     return out
 
 
+def _indent_only(text_obj: Text) -> Text:
+    """每行补 2 空格续行缩进(无 ⏺ 头)—— 用于段内非首块的 progressive commit。"""
+    out = Text()
+    for i, line in enumerate(text_obj.split("\n", include_separator=False)):
+        if i:
+            out.append("\n")
+        out.append("  ")
+        out.append_text(line)
+    return out
+
+
+def _split_committable(buf: str) -> Tuple[str, str]:
+    """把累积 buf 切成 (可提交的完整块, 进行中的残块)。
+
+    提交点 = fence-depth 0 处的空行(markdown 块边界)。未闭合代码围栏整体留在
+    残块,fence 内的空行不当提交点 —— 避免逐行 commit 破坏跨行 markdown
+    (代码块/列表/表格)。无块边界 → 全部留残块(整块仍在 live 里刷)。"""
+    lines = buf.split("\n")
+    fence = False
+    last = -1
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("```"):
+            fence = not fence
+            continue
+        if s == "" and not fence:
+            last = i
+    if last < 0:
+        return "", buf
+    committable = "\n".join(lines[:last])
+    remainder = "\n".join(lines[last + 1:])
+    return committable, remainder
+
+
 def _tail_cap(text_obj: Text, height: int, reserve: int = 6) -> Text:
     """把 Text 截到尾部 max(3, height-reserve) 行 —— 给底部 live 尾区用,
     保证活跃段渲染高度不超终端(避免 Live overflow 花屏)。
@@ -409,6 +443,7 @@ class StreamingAgentRenderer:
         # 显式传入 (e.g. theme.ERR for 拒绝) → 强制用这个色
         self._pending: List[tuple[str, str, Optional[str]]] = []
         self._text_buf = ""
+        self._dot_emitted = False         # 当前 text 段是否已发出 ⏺ 头(progressive commit 用)
         self._reason_open = False
         self._reason_buf = ""
         self._live: Optional[Live] = None
@@ -422,19 +457,27 @@ class StreamingAgentRenderer:
         self._opened = True
         self.console.print()
 
-    def _framed_render(self, text: str) -> Text:
-        """累积文本渲成 markdown,再包 ⏺ + 续行缩进的 strip 框。"""
+    def _render_body(self, text: str, *, with_dot: bool) -> Text:
+        """累积文本渲成 markdown,再包前缀:首块带 ⏺,段内后续块只缩进续行。"""
         width = max(20, self.console.width - 2)
         body = render_markdown(text, width)
-        return _step_lines_from_text(body, theme.DEFAULT)
+        if with_dot:
+            return _step_lines_from_text(body, theme.DEFAULT)
+        return _indent_only(body)
+
+    def _framed_render(self, text: str) -> Text:
+        """累积文本渲成 markdown,再包 ⏺ + 续行缩进的 strip 框。"""
+        return self._render_body(text, with_dot=True)
 
     def _active_height(self) -> int:
         return getattr(getattr(self.console, "size", None), "height", 24) or 24
 
     def _active_frame(self, text: str) -> Text:
         """活跃段的 live 帧:整段渲染后只取尾部若干行,防 Live 超终端高度。
-        全文由 _close_text 落 scrollback,这里截断不丢内容。"""
-        return _tail_cap(self._framed_render(text), self._active_height())
+        已完成块由 text_chunk 逐块落 scrollback,这里只渲进行中的残块。
+        段内已发过 ⏺ 时残块用缩进续行(不再补第二个 ⏺)。"""
+        return _tail_cap(self._render_body(text, with_dot=not self._dot_emitted),
+                         self._active_height())
 
     def _close_text(self) -> None:
         """text/reasoning segment 切段(progressive commit)。
@@ -458,8 +501,10 @@ class StreamingAgentRenderer:
                     self.console.print(_render_thinking(buf))    # 折叠暗色块
             else:
                 buf, self._text_buf = self._text_buf, ""
-                if buf:
-                    self.console.print(self._framed_render(buf))
+                if buf.strip():     # 提交进行中残块(段内首块带 ⏺,否则缩进续行)
+                    self.console.print(
+                        self._render_body(buf, with_dot=not self._dot_emitted))
+                    self._dot_emitted = True
         elif not self._pending_indent:
             self.console.file.write("\n")
             self.console.file.flush()
@@ -530,10 +575,20 @@ class StreamingAgentRenderer:
         if not self._text_open:
             self._text_open = True
             self._text_buf = ""
+            self._dot_emitted = False
             self._live = Live(console=self.console, transient=True,
                               auto_refresh=False)
             self._live.start()
         self._text_buf += chunk
+        # progressive commit:写完的块(fence 外空行为界)经 console.print 落进
+        # scrollback(Rich Live 会把它打在 live 区上方,永久),只把进行中的残块
+        # 留在 live 帧里。这样完成内容向上滚动定格,不再"原地覆盖"或"末尾一次性出现"。
+        committable, remainder = _split_committable(self._text_buf)
+        if committable.strip():
+            self.console.print(
+                self._render_body(committable, with_dot=not self._dot_emitted))
+            self._dot_emitted = True
+            self._text_buf = remainder
         self._live.update(self._active_frame(self._text_buf), refresh=True)
 
     def tool_notice(self, name: str, args_preview: str = "",

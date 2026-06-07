@@ -99,6 +99,58 @@ def test_reasoning_chunk_commits_dim_thinking_block():
     assert "✻" in out
 
 
+def test_split_committable_basic():
+    committable, remainder = chat_view._split_committable("p1\n\np2 wip")
+    assert committable == "p1"
+    assert remainder == "p2 wip"
+
+
+def test_split_committable_no_block_boundary_holds_everything():
+    committable, remainder = chat_view._split_committable("一段没有空行的话")
+    assert committable == ""
+    assert remainder == "一段没有空行的话"
+
+
+def test_split_committable_holds_open_code_fence():
+    # 代码围栏未闭合 → 整块留残块,fence 内的空行不当提交点
+    buf = "前言\n\n```py\n\ncode line"
+    committable, remainder = chat_view._split_committable(buf)
+    assert committable == "前言"
+    assert "```py" in remainder
+    assert "code line" in remainder
+
+
+def test_text_chunk_commits_completed_block_out_of_buffer():
+    # 核心:写完的块在 close 之前就 commit 出 buffer(不再等末尾一次性出现)
+    con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
+    r = chat_view.StreamingAgentRenderer(con)
+    r.text_chunk("第一段已经写完。\n\n第二段进行中")
+    assert "第一段" not in r._text_buf          # 首块已落 scrollback
+    assert "第二段进行中" in r._text_buf         # 进行中块仍在 live buffer
+    assert r._dot_emitted is True               # ⏺ 已在首块发出
+
+
+def test_progressive_commit_appears_before_close():
+    con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
+    r = chat_view.StreamingAgentRenderer(con)
+    r.text_chunk("alpha block.\n\n")
+    # 还没 close,首块就该已进 scrollback(经 console.print),buffer 已清空首块
+    assert "alpha block" not in r._text_buf
+    out = re.sub(r"\x1b\[[0-9;]*m", "", con.file.getvalue())
+    assert "alpha block" in out
+
+
+def test_second_block_indents_without_extra_dot():
+    # 段内非首块 commit 用 2 空格缩进续行,不再补第二个 ⏺
+    con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
+    r = chat_view.StreamingAgentRenderer(con)
+    r.text_chunk("blk1\n\nblk2\n\ntail")
+    r.close()
+    out = re.sub(r"\x1b\[[0-9;]*m", "", con.file.getvalue())
+    assert out.count("⏺") == 1                  # 整段只有一个 ⏺ 头
+    assert "blk1" in out and "blk2" in out and "tail" in out
+
+
 def test_reasoning_folds_when_long():
     con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
     r = chat_view.StreamingAgentRenderer(con)
