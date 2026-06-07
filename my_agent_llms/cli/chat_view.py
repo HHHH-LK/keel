@@ -91,20 +91,13 @@ def _tail_cap(text_obj: Text, height: int, reserve: int = 6) -> Text:
     return out
 
 
-def _render_thinking(text: str, fold: int = 3) -> Text:
-    """思考块:✻ 起头,暗色;超过 fold 行折叠为 '首 fold 行 + … +N 行(思考)'。"""
-    lines = text.rstrip("\n").split("\n")
-    hidden = max(0, len(lines) - fold)
-    shown = lines[:fold]
+def _render_thinking(text: str, fold: int = 1) -> Text:
+    """思考块折成 1 行:✻ + 首行(暗色)。完整思考不再整段倒进 scrollback —— 跟
+    Claude Code 一致(只留一行标记,内容可后续 ctrl+o 展开)。fold 保留作签名兼容。"""
+    first = text.strip().split("\n", 1)[0] if text.strip() else ""
     out = Text()
     out.append("✻ ", style=theme.DIM)
-    for i, ln in enumerate(shown):
-        if i:
-            out.append("\n  ")
-        out.append(ln, style=theme.DIM)
-    if hidden:
-        out.append("\n  ")
-        out.append(f"… +{hidden} 行(思考)", style=theme.DIM)
+    out.append(first, style=theme.DIM)
     return out
 
 
@@ -307,11 +300,42 @@ def _summarize_grep(text: str) -> Optional[str]:
     return f"{n} matches" if n else None
 
 
+def _summarize_ls(text: str) -> Optional[str]:
+    n = len([l for l in text.split("\n") if l.strip()])
+    return f"{n} items" if n else None
+
+
 # 工具名 → 首行摘要函数;返回 None 则回退泛型 body
 _TOOL_RESULT_SUMMARY = {
     "Read": _summarize_read,
     "Grep": _summarize_grep,
+    "LS": _summarize_ls,
 }
+
+
+def _short_arg(preview: str) -> str:
+    """'path=a.py' → 'a.py';无 '=' 原样返回。分组里显示每个目标用。"""
+    if "=" in preview:
+        return preview.split("=", 1)[1].strip()
+    return preview.strip()
+
+
+def _render_tool_group(name: str, items: List[Tuple[str, str]], color: str,
+                       elapsed_sec: Optional[float] = None) -> Text:
+    """连续同类只读工具合并:'⏺ Read N files' + 每个目标一行 ⎿。
+    items: [(preview, result)]。跟 Claude Code 的 'Read 3 files' 一致。"""
+    n = len(items)
+    header = f"Read {n} files" if name == "Read" else f"{name} ×{n}"
+    out = Text()
+    out.append("⏺ ", style=color)
+    out.append(header)
+    if elapsed_sec is not None:
+        out.append("  ·  ", style=theme.DIM)
+        out.append(_fmt_elapsed(elapsed_sec), style=theme.DIM)
+    for i, (preview, _res) in enumerate(items):
+        out.append("\n  ⎿  " if i == 0 else "\n     ", style=color if i == 0 else "")
+        out.append(_short_arg(preview), style=theme.DIM)
+    return out
 
 
 def _render_tool_diff(summary: str, lines: List[Tuple[str, str, str]],

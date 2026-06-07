@@ -151,12 +151,13 @@ def test_second_block_indents_without_extra_dot():
     assert "blk1" in out and "blk2" in out and "tail" in out
 
 
-def test_reasoning_folds_when_long():
+def test_reasoning_folds_to_single_line():
     con = Console(file=io.StringIO(), force_terminal=True, width=80, height=40)
     r = chat_view.StreamingAgentRenderer(con)
     r.reasoning_chunk("\n".join(f"思考{i}" for i in range(10)))
     r.close()
     out = re.sub(r"\x1b\[[0-9;]*m", "", con.file.getvalue())
+    # 折成 1 行:只留 ✻ + 首行,后续思考行不再整段倒出
     assert "思考0" in out
-    assert "+7 行" in out                         # 首3行 + 余7(思考)
+    assert "思考1" not in out
     assert "思考9" not in out

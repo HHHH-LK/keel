@@ -33,6 +33,11 @@ class ScrollbackRenderer:
         # 必须是队列:agent Phase A 先把同轮所有 tool_call 入队,Phase C 再按序
         # tool_result —— 单槽会被后来的覆盖,导致前面的名字/只读标志丢失。
         self._pending: list = []
+        # 连续同类只读工具的合并缓冲(Phase C 同名结果攒成一组 → 'Read N files')。
+        # items: [(preview, result, elapsed)];仅当后面还有同名排队时才攒,否则即时落地。
+        self._group: list = []
+        self._group_name = None
+        self._group_ro = False
 
     # ── 渲染 ──
     def _render_md(self, src: str, *, with_dot: bool) -> Text:
@@ -45,6 +50,7 @@ class ScrollbackRenderer:
         if not chunk:
             return
         self._opened = True
+        self._flush_group()
         if self._mode == "reasoning":
             self._close_reasoning()
         self._mode = "text"
@@ -60,6 +66,7 @@ class ScrollbackRenderer:
         if not chunk:
             return
         self._opened = True
+        self._flush_group()
         self._mode = "reasoning"
         self._reason_buf += chunk
         self._set_active(self._reason_buf, "reasoning", False)
@@ -68,6 +75,7 @@ class ScrollbackRenderer:
         """工具/收尾前:把当前 text 残块 commit 掉,让工具块从干净行开始。"""
         if self._mode == "reasoning":
             self._close_reasoning()
+        self._flush_group()
         buf, self._text_buf = self._text_buf, ""
         if buf.strip():
             self._commit(self._render_md(buf, with_dot=not self._dot))
@@ -80,27 +88,50 @@ class ScrollbackRenderer:
         self._flush_text()
         self._pending.append((name, args_preview, read_only))
 
-    def tool_result(self, text: str, *, elapsed_sec=None,
+    def tool_result(self, text: str, *, name: str = None, read_only=None,
+                    elapsed_sec=None,
                     max_lines: int = 4, max_line_chars: int = 300) -> None:
-        """工具结果(Claude Code 风编排,不全量倒出):
-        - write_todo → 'Update Todos' 内联清单
-        - 有 per-type 摘要(Read/Grep…)→ 一行摘要(如 'Read 42 lines')
-        - 否则 → 折叠到前 max_lines 行 + '… +N lines',每行截宽
+        """工具结果(Claude Code 风编排,不全量倒出)。
+
+        name/read_only 显式传入时优先(稳健配对,不再只靠 FIFO 倒推 → 修空 ⏺);
+        连续同名只读工具(同一回合并行批)合并成 'Read N files'。
         """
         if not text:
             return
         if self._pending:
-            name, preview, read_only = self._pending.pop(0)   # FIFO 配对
+            fifo_name, preview, fifo_ro = self._pending.pop(0)   # 取 preview(只在 call 时知道)
         else:
-            name, preview, read_only = "", "", False
-        # ⏺ 颜色:出错→红;只读→中性;改动类成功→绿。
+            fifo_name, preview, fifo_ro = "", "", False
+        rname = name or fifo_name
+        ro = fifo_ro if read_only is None else read_only
+
         stripped = text.lstrip()
-        if stripped.startswith("❌") or "拒绝" in stripped:
-            color = theme.ERR
-        elif read_only:
-            color = theme.DEFAULT
-        else:
-            color = theme.OK
+        is_err = stripped.startswith("❌") or "拒绝" in stripped
+        groupable = ro and not is_err and rname != "write_todo"
+
+        # 不同名 / 不可组 → 先把已攒的组冲掉,保证顺序
+        if self._group and (not groupable or rname != self._group_name):
+            self._flush_group()
+
+        if groupable:
+            self._group_name = rname
+            self._group_ro = ro
+            self._group.append((preview, text, elapsed_sec))
+            # 后面还有同名排队 → 继续攒;否则立即落地(单个也即时,不等 close)
+            if not (self._pending and self._pending[0][0] == rname):
+                self._flush_group()
+            return
+
+        self._commit_single(rname, preview, ro, is_err, text,
+                            elapsed_sec=elapsed_sec, max_lines=max_lines,
+                            max_line_chars=max_line_chars)
+
+    def _commit_single(self, name: str, preview: str, read_only: bool,
+                       is_err: bool, text: str, *, elapsed_sec=None,
+                       max_lines: int = 4, max_line_chars: int = 300) -> None:
+        """单个工具结果落地(原 tool_result 主体)。"""
+        # ⏺ 颜色:出错→红;只读→中性;改动类成功→绿。
+        color = theme.ERR if is_err else (theme.DEFAULT if read_only else theme.OK)
 
         # write_todo → 内联 Update Todos 清单
         if name == "write_todo":
@@ -136,6 +167,24 @@ class ScrollbackRenderer:
             bl[0] = f"{bl[0]}  ·  {chat_view._fmt_elapsed(elapsed_sec)}"
             body = "\n".join(bl)
         self._commit(chat_view._continuation_lines(body, color, more=hidden))
+
+    def _flush_group(self) -> None:
+        """把攒着的同类只读工具组落地:单个走普通渲染,多个合并成 'Read N files'。"""
+        if not self._group:
+            return
+        items, name, ro = self._group, self._group_name, self._group_ro
+        self._group, self._group_name, self._group_ro = [], None, False
+        if len(items) == 1:
+            preview, text, elapsed = items[0]
+            stripped = text.lstrip()
+            is_err = stripped.startswith("❌") or "拒绝" in stripped
+            self._commit_single(name, preview, ro, is_err, text, elapsed_sec=elapsed)
+            return
+        color = theme.DEFAULT if ro else theme.OK
+        total = sum(e or 0 for _, _, e in items)
+        self._commit(chat_view._render_tool_group(
+            name, [(p, t) for p, t, _ in items], color,
+            elapsed_sec=total if total > 0 else None))
 
     def close(self, *, tools_used: int = 0, elapsed_seconds: float = 0.0,
               tokens_in: int = 0, tokens_out: int = 0) -> None:

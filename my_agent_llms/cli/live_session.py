@@ -241,7 +241,8 @@ class LiveSession:
                 on_reasoning_chunk=r.reasoning_chunk,
                 on_tool_call=lambda n, a: r.tool_call(n, _preview(a),
                                                       self._is_read_only(n)),
-                on_tool_result=lambda n, res, el: r.tool_result(res, elapsed_sec=el),
+                on_tool_result=lambda n, res, el: r.tool_result(
+                    res, name=n, read_only=self._is_read_only(n), elapsed_sec=el),
                 on_permission_request=self._on_permission,
                 on_llm_done=on_llm_done,
                 should_cancel=lambda: self.state["cancel"],
