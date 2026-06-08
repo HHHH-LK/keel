@@ -89,7 +89,7 @@ class BoxPromptSession:
             complete_while_typing=True,
             auto_suggest=AutoSuggestFromHistory(),
             history=self._history,
-            wrap_lines=True,
+            wrap_lines=multiline,        # 单行不折行(中文双宽否则折成两行),多行才换行
             prompt=HTML("<prompt.arrow>❯ </prompt.arrow>"),
         )
         buf = ta.buffer
