@@ -167,3 +167,66 @@ def test_finalize_todo_keeps_when_unfinished():
     sess._commit = lambda t: None
     sess._finalize_todo()
     assert len(s.items) == 2                   # 有没干完的 → 保留
+
+
+# ── write_todo 不再内联到日志:固定面板已展示,日志重复 → 砍掉 ──────────
+def test_write_todo_not_rendered_inline():
+    sess = LiveSession.__new__(LiveSession)
+    # 固定任务清单面板已常驻 → 日志不再内联清单(否则一份出现两次)
+    assert sess._renders_inline("write_todo") is False
+
+
+def test_diff_tools_not_rendered_inline():
+    sess = LiveSession.__new__(LiveSession)
+    # 回归:Edit/Write 的 diff 在审批区落过,同样不内联
+    assert sess._renders_inline("Edit") is False
+    assert sess._renders_inline("Write") is False
+
+
+def test_ordinary_tools_render_inline():
+    sess = LiveSession.__new__(LiveSession)
+    assert sess._renders_inline("Read") is True
+    assert sess._renders_inline("Grep") is True
+    assert sess._renders_inline("Bash") is True
+
+
+# ── 全完成即时清空:打完最后一个勾就清,不等整轮收尾(否则面板一直钉着像卡住)──
+def test_maybe_clear_completed_clears_immediately():
+    from my_agent_llms.planning.todo import TodoStore
+    s = TodoStore()
+    s.set([{"content": "a", "status": "completed"},
+           {"content": "b", "status": "completed"}])
+    sess = LiveSession.__new__(LiveSession)
+    sess.cli = SimpleNamespace(agent=SimpleNamespace(todo_store=s))
+    committed = []
+    sess._commit = lambda t: committed.append(t)
+    assert sess._maybe_clear_completed_todos() is True
+    assert s.items == []                                  # 清空 → 面板 filter 随之隐藏
+    assert any("完成" in t.plain for t in committed)
+
+
+def test_maybe_clear_completed_keeps_when_unfinished():
+    from my_agent_llms.planning.todo import TodoStore
+    s = TodoStore()
+    s.set([{"content": "a", "status": "completed"},
+           {"content": "b", "status": "in_progress"}])
+    sess = LiveSession.__new__(LiveSession)
+    sess.cli = SimpleNamespace(agent=SimpleNamespace(todo_store=s))
+    sess._commit = lambda t: None
+    assert sess._maybe_clear_completed_todos() is False
+    assert len(s.items) == 2                              # 有没干完的 → 保留
+
+
+def test_finalize_todo_is_noop_after_immediate_clear():
+    """即时清空后,收尾兜底再调一次不应重复报"完成"(store 已空 → no-op)。"""
+    from my_agent_llms.planning.todo import TodoStore
+    s = TodoStore()
+    s.set([{"content": "a", "status": "completed"}])
+    sess = LiveSession.__new__(LiveSession)
+    sess.cli = SimpleNamespace(agent=SimpleNamespace(todo_store=s))
+    committed = []
+    sess._commit = lambda t: committed.append(t)
+    sess._maybe_clear_completed_todos()                  # 即时清(打最后一个勾)
+    committed.clear()
+    sess._finalize_todo()                                # 收尾兜底
+    assert committed == []                                # store 已空 → 不再二次报完成

@@ -1030,6 +1030,16 @@ class ChatCLI:
             if ct:
                 token_totals["out"] += ct
 
+        # 自证阶段:本轮只打一次归属头(多轮重试也只标一次)。
+        verify_announced = {"v": False}
+
+        def _on_verify_phase(_round) -> None:
+            _stop_status()
+            if not verify_announced["v"]:
+                renderer_slot["current"].verify_notice()
+                verify_announced["v"] = True
+            _restart_status()
+
         # 运行期间后台监听 esc:按下即 set cancel,run 在步级/流式逐 chunk 处中断。
         from my_agent_llms.cli.key_listener import EscListener
         cancelled = False
@@ -1044,6 +1054,7 @@ class ChatCLI:
                     on_tool_result=_on_tool_result,
                     on_llm_done=_on_llm_done,
                     on_reasoning_chunk=_on_reasoning,
+                    on_verify_phase=_on_verify_phase,
                     should_cancel=lambda: _esc.cancelled,
                 )
         except Exception as exc:

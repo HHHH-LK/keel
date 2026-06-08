@@ -112,6 +112,20 @@ class ScrollbackRenderer:
             self._dot = True
             (self._commit_step if first else self._commit)(block)
 
+    def verify_notice(self) -> None:
+        """自证(verify-retry)阶段开场:落一个区别于普通工具的 ⏺ 归属头。
+
+        模型刚答完、门判未达标 → 接下来这段 Grep/Bash 是【系统在让它自证】,不是它
+        自己又翻工具。打这一行让随后的核对动作有归属,不再像"答完莫名其妙翻工具"。"""
+        self._opened = True
+        self._flush_text()
+        out = Text()
+        out.append("⏺ ", style=theme.TODO_ACTIVE)
+        out.append("自证完成", style=theme.TODO_ACTIVE)
+        out.append("  核对改动是否真的生效（以下为核对过程）", style=theme.DIM)
+        self._commit_step(out)
+        self._dot = False     # 自证段后,正文重新起一个 ⏺ 步
+
     def tool_call(self, name: str, args_preview: str = "",
                   read_only: bool = False) -> None:
         self._opened = True

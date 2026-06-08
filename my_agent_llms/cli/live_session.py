@@ -242,14 +242,23 @@ class LiveSession:
         store = self._todo_store()
         return bool(getattr(store, "items", None))
 
-    def _finalize_todo(self) -> None:
-        """一轮收尾:清单全完成 → 报一句"完成"并清空,让固定面板消失
-        (任务做完了别一直钉着);有未完成项则保留(用户能看到没干完的)。"""
+    def _maybe_clear_completed_todos(self) -> bool:
+        """清单全完成 → 报一句"完成"并清空(固定面板随之消失);有未完成项则保留。
+
+        关键:这要在【打完最后一个勾的那一刻】就触发,不能只等一轮收尾 —— 否则
+        agent 答完后的尾巴(最终总结、verify 自证轮)会让 6/6 面板一直钉着像"卡住"。
+        返回是否清空了。"""
         store = self._todo_store()
         items = getattr(store, "items", None)
         if items and all(it.get("status") == "completed" for it in items):
             self._commit(Text("  ⎿  ✓ 任务完成", style=theme.OK))
             store.items = []
+            return True
+        return False
+
+    def _finalize_todo(self) -> None:
+        """一轮收尾兜底:若全完成时没经 write_todo 的即时清空(异常/边界),这里再清一次。"""
+        self._maybe_clear_completed_todos()
 
     def _todo_fragments(self):
         """非空 → 渲成面板的 ANSI;空 → []。filter 已先挡掉空,这里二次兜底。"""
@@ -358,6 +367,13 @@ class LiveSession:
         except Exception:
             return False
 
+    def _renders_inline(self, name: str) -> bool:
+        """该工具是否在 scrollback 里内联渲染 ⏺。
+
+        否 = 它已在别处展示,日志不再重复:Edit/Write 的 diff 在审批区落过,
+        write_todo 的清单在固定任务清单面板常驻 —— 都不内联,免得一份出现两次。"""
+        return name not in _DIFF_TOOLS and name != "write_todo"
+
     def _notify_not_ready(self) -> None:
         """未配置(agent=None)时的友好提示,替代崩 'NoneType'.run。"""
         self._commit(chat_view._continuation_lines(
@@ -391,9 +407,9 @@ class LiveSession:
 
         def _on_tcall(n, a):
             self.state["activity"] = f"调用 {n}"
-            # diff 类(Edit/Write):改动已在审批时落上方滚动区,不再走 renderer 的
-            # ⏺ 通知/结果(否则一处改动出现两次)。其余工具正常。
-            if n not in _DIFF_TOOLS:
+            # 已在别处展示的工具不再走 renderer 的内联 ⏺(否则一处出现两次):
+            # diff 类(Edit/Write)在审批区;write_todo 在固定任务清单面板。
+            if self._renders_inline(n):
                 r.tool_call(n, _preview(a), self._is_read_only(n))
 
         def _on_tresult(n, res, el):
@@ -401,10 +417,29 @@ class LiveSession:
                 # 成功:diff 块即记录,不重复;只在【出错】时补一行(绕开 renderer FIFO)
                 if _is_error_result(res):
                     self._commit(_render_diff_tool_error(n, res))
+            elif n == "write_todo":
+                # 固定面板已展示;成功时日志不内联(免得一份清单出现两次),
+                # 仅在【出错】时补一行,否则用户看不到 todo 没更新成功。
+                if _is_error_result(res):
+                    self._commit(chat_view._continuation_lines(
+                        f"❌ write_todo: {res}", theme.ERR))
+                else:
+                    # 刚打完最后一个勾 → 立刻清空收尾,别等整轮结束(总结/verify 的
+                    # 尾巴会让 6/6 面板一直钉着,看着像"卡住没消失")。
+                    self._maybe_clear_completed_todos()
             else:
                 r.tool_result(res, name=n, read_only=self._is_read_only(n),
                               elapsed_sec=el)
             self.state["activity"] = "生成中"
+
+        # 自证阶段:本轮只打一次归属头(多轮重试也只标一次,后续核对都归在它下面)。
+        verify_announced = {"v": False}
+
+        def _on_verify_phase(_round):
+            self.state["activity"] = "自证完成"
+            if not verify_announced["v"]:
+                r.verify_notice()
+                verify_announced["v"] = True
 
         try:
             self.cli.agent.run(
@@ -415,6 +450,7 @@ class LiveSession:
                 on_tool_result=_on_tresult,
                 on_permission_request=self._on_permission,
                 on_llm_done=on_llm_done,
+                on_verify_phase=_on_verify_phase,
                 should_cancel=lambda: self.state["cancel"],
             )
         except Exception as exc:

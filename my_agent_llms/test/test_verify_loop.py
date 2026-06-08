@@ -70,12 +70,14 @@ def test_returns_best_not_last_on_max_steps():
     assert out.residual == 1.0
 
 
-def test_feedback_describes_command_ok_failure():
+def test_feedback_command_ok_failure_does_not_leak_command():
+    # 新契约(B):command_ok 已在门内 subprocess 跑过,反馈不再回灌命令原文,
+    # 否则模型会用自己的 Bash 把同一条命令再跑一遍"自证"污染对话。只给方向。
     from my_agent_llms.verify.loop import feedback_from
     spec = CheckSpec(task="t", checks=[
         Check(id="a", type="command_ok", params={"cmd": "pytest"}, is_hard_oracle=True),
     ])
     msg = feedback_from(spec, {"a": False})
     assert msg is not None
-    assert "pytest" in msg
-    assert "exit 0" in msg
+    assert "pytest" not in msg            # 命令原文不得泄露
+    assert "不要重新运行" in msg          # 明确叫模型别再跑检查命令

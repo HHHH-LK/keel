@@ -42,8 +42,13 @@ def feedback_from(spec: CheckSpec, passed: Dict[str, bool]) -> Optional[str]:
     if not failed:
         return None
     lines = ["上一轮产出未通过以下验收项,请针对性修订(不要推倒重来,只补差距):"]
+    seen: set = set()       # command_ok 泛化提示会重复 → 去重,不堆同一句
     for c in failed:
-        lines.append(f"- {_describe_check(c)}")
+        desc = _describe_check(c)
+        if desc in seen:
+            continue
+        seen.add(desc)
+        lines.append(f"- {desc}")
     return "\n".join(lines)
 
 
@@ -58,7 +63,11 @@ def _describe_check(c) -> str:
     if t == "field_equals":
         return f"产物文件 {p.get('path')!r} 的字段 {p.get('key')!r} 应等于 {p.get('value')!r}"
     if t == "command_ok":
-        return f"检查命令必须成功(exit 0): {p.get('cmd')!r}"
+        # 不回灌命令原文:命令已在门内 subprocess 跑过,把它喂回去只会诱导模型
+        # 用自己的 Bash/工具再跑一遍"自证"(见 transcript 里答完又冒出 git diff),
+        # 污染对话。只给方向:去修产物本身,别重跑检查 —— 核对由系统自动完成。
+        return ("一项自动核对未通过,说明改动可能没真正生效。请直接修正产物"
+                "(文件/代码/输出)本身;不要重新运行检查命令,核对由系统自动完成。")
     if t == "tool_called":
         return f"任务要求必须调用工具: {p.get('tool')!r}"
     if t == "judge":

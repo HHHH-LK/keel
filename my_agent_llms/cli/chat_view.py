@@ -667,6 +667,19 @@ class StreamingAgentRenderer:
             self._text_buf = remainder
         self._live.update(self._active_frame(self._text_buf), refresh=True)
 
+    def verify_notice(self) -> None:
+        """自证(verify-retry)阶段开场:打一个区别于普通工具的 ⏺ 归属头。
+
+        模型刚答完、门判未达标 → 接下来这段核对动作是【系统在让它自证】,
+        打这一行让随后的 Grep/Bash 有归属,不再像"答完莫名其妙翻工具"。"""
+        self._ensure_started()
+        self._close_text()
+        out = Text()
+        out.append("⏺ ", style=theme.TODO_ACTIVE)
+        out.append("自证完成", style=theme.TODO_ACTIVE)
+        out.append("  核对改动是否真的生效（以下为核对过程）", style=theme.DIM)
+        self.console.print(out)
+
     def tool_notice(self, name: str, args_preview: str = "",
                     color: Optional[str] = None) -> None:
         """登记一个即将调用的工具,延迟到 tool_result 来时一起打。
