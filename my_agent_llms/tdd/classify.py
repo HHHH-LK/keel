@@ -23,13 +23,31 @@ _PROMPT = """判断下面这个任务是否适合"先写测试再写实现"(TDD)
 
 任务: {task}"""
 
+# 常见问候/招呼语:直接判 False,根本不调 LLM。
+# 既省一次调用,又不把"hello 这种闲聊"交给模型抽签(高温下会偶发判 True → 凭空写测试)。
+_GREETINGS = frozenset({
+    "hello", "hi", "hey", "yo", "hiya", "good morning", "good evening",
+    "你好", "您好", "嗨", "哈喽", "哈啰", "在", "在吗", "在不在", "在么",
+    "早", "早安", "早上好", "中午好", "下午好", "晚上好", "晚安",
+})
+
+
+def _is_greeting(task: str) -> bool:
+    # 归一化:去首尾空白、剥常见尾标点、转小写,再精确匹配问候集合。
+    norm = task.strip().rstrip("!！。.~～?？,，、 ").strip().lower()
+    return norm in _GREETINGS
+
 
 def classify(llm, task: str, user_override: Optional[bool] = None) -> TddDecision:
     if user_override is not None:
         return TddDecision(use_tdd=user_override, reason="user override")
+    if _is_greeting(task):
+        return TddDecision(use_tdd=False, reason="问候/闲聊,无需 TDD")
     try:
+        # temperature=0:同一输入判定确定化,消除"hello 偶发判 True"的随机性。
         content = llm.invoke(
-            [{"role": "system", "content": _PROMPT.format(task=task)}]) or ""
+            [{"role": "system", "content": _PROMPT.format(task=task)}],
+            temperature=0) or ""
         data = _parse_json(content)
         return TddDecision(
             use_tdd=bool(data.get("use_tdd", False)),
