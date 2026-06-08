@@ -235,3 +235,42 @@ def test_parse_still_handles_pipe_strings():
         {"content": "读配置", "status": "in_progress"},
         {"content": "改端口", "status": "pending"},
     ]
+
+
+# ── 结构化触发:连续多次改动却没列清单 → 注入提醒,促模型用 write_todo ──
+def _nudge_agent(store, mutation_count, nudged=False):
+    a = MyFunctionCallAgent.__new__(MyFunctionCallAgent)
+    a.todo_store = store
+    a._turn_mutation_count = mutation_count
+    a._todo_nudged = nudged
+    return a
+
+
+def test_nudge_after_enough_mutations_no_todo():
+    a = _nudge_agent(TodoStore(), mutation_count=3)      # 空清单 + 改了 3 次
+    msgs = []
+    a._maybe_nudge_todo(msgs)
+    assert any("write_todo" in m.get("content", "") for m in msgs)
+    assert a._todo_nudged is True
+
+
+def test_no_nudge_when_todo_exists():
+    s = TodoStore(); s.set([{"content": "x", "status": "in_progress"}])
+    a = _nudge_agent(s, mutation_count=5)                 # 已有清单 → 不提醒
+    msgs = []
+    a._maybe_nudge_todo(msgs)
+    assert msgs == []
+
+
+def test_no_nudge_below_threshold():
+    a = _nudge_agent(TodoStore(), mutation_count=1)       # 改动太少 → 不提醒
+    msgs = []
+    a._maybe_nudge_todo(msgs)
+    assert msgs == []
+
+
+def test_nudge_only_once_per_turn():
+    a = _nudge_agent(TodoStore(), mutation_count=4, nudged=True)
+    msgs = []
+    a._maybe_nudge_todo(msgs)
+    assert msgs == []                                     # 已提醒过 → 不重复

@@ -19,6 +19,9 @@ from my_agent_llms.tools.registry import ToolRegistry
 from my_agent_llms.verify.replan import make_plan
 from my_agent_llms.planning.todo import todo_system_message, TODO_HEADING
 
+# 结构化触发 todo 的阈值:本轮连续改动达这么多次还没列清单 → 提醒模型用 write_todo
+TODO_NUDGE_THRESHOLD = 3
+
 logger = logging.getLogger(__name__)
 
 # 流式回调签名:
@@ -37,6 +40,10 @@ ToolCallCallback = Callable[[str, Dict[str, Any]], None]
 PermissionCallback = Callable[[str, Dict[str, Any], str], bool]
 ToolResultCallback = Callable[[str, str, float], None]
 LLMDoneCallback = Callable[[float, Optional[int], Optional[int]], None]
+# - on_verify_phase(round_idx): 进入一轮"自证重试"前调用(模型已答、门判未达标、
+#   即将注入反馈再跑一轮)。UI 借此给随后的核对动作打一个区别于普通工具调用的归属头,
+#   不再让 verify 触发的 Grep/Bash 混在主对话里像"答完又莫名其妙翻工具"。
+VerifyPhaseCallback = Callable[[int], None]
 
 
 class MyFunctionCallAgent(Agent):
@@ -99,6 +106,7 @@ class MyFunctionCallAgent(Agent):
             on_tool_result: Optional[ToolResultCallback] = None,
             on_llm_done: Optional[LLMDoneCallback] = None,
             on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
+            on_verify_phase: Optional[VerifyPhaseCallback] = None,
             should_cancel: Optional[Callable[[], bool]] = None,
             **kwargs) -> str:
         """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。
@@ -120,6 +128,8 @@ class MyFunctionCallAgent(Agent):
         tools = self._build_tool_schemas()
         tool_call_count = 0
         self._turn_mutated = False    # 本轮是否动过有副作用工具 → 决定 verify 闸门是否开
+        self._turn_mutation_count = 0  # 本轮"产物型"改动次数 → 结构化触发 todo 提醒
+        self._todo_nudged = False      # 本轮是否已提醒过用 write_todo(只提醒一次)
 
         final_response = ""
         # 验证-重试 gate 的循环外状态(spec 首次进 gate 时惰性生成一次,之后不变)
@@ -136,6 +146,7 @@ class MyFunctionCallAgent(Agent):
                 final_response = final_response or "(已被用户中断 esc)"
                 break
             self._refresh_todo_injection(messages)
+            self._maybe_nudge_todo(messages)      # 改够多次还没列清单 → 提醒用 write_todo
             t_llm = time.monotonic()
             response = self._invoke_with_tools(
                 messages, tools, tool_choice,
@@ -177,6 +188,7 @@ class MyFunctionCallAgent(Agent):
                 # STUCK/OSCILLATING(原地打转)且还有预算 → 换思路重新规划,而非放弃
                 if gate["needs_replan"] and _replan_budget > 0:
                     _replan_budget -= 1
+                    self._emit_verify_phase(on_verify_phase, _verify_round)
                     plan = self._make_plan(input_text, gate["feedback"])
                     messages.append({"role": "user", "content":
                         f"⚠️ 之前的做法卡住了。换个思路,按以下新计划重做:\n{plan}"})
@@ -185,6 +197,7 @@ class MyFunctionCallAgent(Agent):
                 if gate["stop"]:
                     final_response = gate["best"].result
                     break
+                self._emit_verify_phase(on_verify_phase, _verify_round)
                 messages.append({"role": "user", "content": gate["feedback"]})
                 continue
 
@@ -258,6 +271,16 @@ class MyFunctionCallAgent(Agent):
         self.last_tool_call_count = tool_call_count
         logger.debug(f"{self.name} 响应完成")
         return final_response
+
+    @staticmethod
+    def _emit_verify_phase(cb, round_idx: int) -> None:
+        """安全触发 on_verify_phase 回调:无回调则 no-op,回调异常不冒泡毁整轮。"""
+        if cb is None:
+            return
+        try:
+            cb(round_idx)
+        except Exception:
+            logger.exception("on_verify_phase 回调异常,忽略")
 
     def _verify_gate(self, candidate, messages, spec, round_idx, history, best):
         """对候选答案跑一轮验证,更新 best/history,返回是否止损 + 反馈文案。"""
@@ -346,6 +369,24 @@ class MyFunctionCallAgent(Agent):
         msg = todo_system_message(store)
         if msg:
             messages.append(msg)
+
+    def _maybe_nudge_todo(self, messages):
+        """结构化触发:本轮连续改动达阈值却没列清单 → 注入一次提醒,促模型用 write_todo。
+
+        todo 没有判别器(全靠模型自觉),弱模型常对大任务不列清单。这里用"实际改动
+        次数"这个结构信号兜底:改够多次还没计划 → 提醒。注入一次,空清单才提醒。"""
+        store = getattr(self, "todo_store", None)
+        if store is None or getattr(self, "_todo_nudged", False):
+            return
+        if getattr(store, "items", None):           # 已有清单 → 不打扰
+            return
+        if getattr(self, "_turn_mutation_count", 0) < TODO_NUDGE_THRESHOLD:
+            return
+        messages.append({"role": "system", "content":
+            "提示:你已经连续做了多处改动,但还没建任务清单。这看起来是个多步任务——"
+            "请马上调用 write_todo 把(剩余)步骤列成分步计划,并在每完成一步后立刻"
+            "更新状态,让用户能跟踪进度。"})
+        self._todo_nudged = True
 
     def _should_run_verify(self, mutated: bool) -> bool:
         """verify-retry 闸门是否该开:开关开 且 本轮动过【有副作用】工具。
@@ -464,8 +505,11 @@ class MyFunctionCallAgent(Agent):
         parallel = [p for p in to_exec if self._tool_is_side_effect_free(p["name"])]
         # verify 闸门:只有"产物型"副作用工具(写文件/改代码/跑命令)才算动过改动;
         # 记账型(记忆/待办)虽串行执行,但 verify_exempt → 不触发事后验证。
-        if any(not self._tool_is_verify_exempt(p["name"]) for p in serial):
+        _mutating = [p for p in serial if not self._tool_is_verify_exempt(p["name"])]
+        if _mutating:
             self._turn_mutated = True
+            # 累计本轮产物型改动次数(供结构化 todo 提醒判定)
+            self._turn_mutation_count = getattr(self, "_turn_mutation_count", 0) + len(_mutating)
 
         for p in serial:
             p["result"], p["elapsed"] = self._run_single_tool(p["name"], p["args"], timeout)
