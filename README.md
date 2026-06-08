@@ -89,13 +89,69 @@ Keel ▸ 🔧 calculator ← 15 * 8 + 32
 
 ## 快速开始
 
-```bash
-uv sync                       # 装依赖(需 Python ≥ 3.13,推荐 uv)
-cp .env.example .env          # 填 LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL
-keel                          # 启动(没配 key 也能进,进去 /config key 现补)
-```
+她用 [uv](https://github.com/astral-sh/uv) 管理一切,**不用你手动装 Python**——`uv sync` 会自动拉好 Python ≥ 3.13 和全部依赖。下面按系统选一份照抄即可。
 
-进去后用 `/help`、`/config`、`/memory`、`/clear` 等 Slash 命令。也保留了 `uv run python chat.py` 的旧入口。模型随便换:OpenAI / Anthropic / Gemini / 本地模型都行。
+<details open>
+<summary><b>🍎 macOS</b></summary>
+
+```bash
+# 1. 装 uv(已装可跳过)
+brew install uv                                   # 或: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. 拉代码
+git clone https://github.com/HHHH-LK/keel.git && cd keel
+
+# 3. 装依赖 + 配置
+uv sync
+cp .env.example .env                              # 然后编辑 .env 填 key/model/base_url
+
+# 4. 启动
+keel
+```
+</details>
+
+<details>
+<summary><b>🐧 Ubuntu / Linux</b></summary>
+
+```bash
+# 1. 装 uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env                       # 让当前终端认到 uv(或重开终端)
+
+# 2. 拉代码
+git clone https://github.com/HHHH-LK/keel.git && cd keel
+
+# 3. 装依赖 + 配置
+uv sync
+cp .env.example .env                              # 然后编辑 .env 填 key/model/base_url
+
+# 4. 启动
+keel
+```
+</details>
+
+<details>
+<summary><b>🪟 Windows (PowerShell)</b></summary>
+
+```powershell
+# 1. 装 uv
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. 拉代码
+git clone https://github.com/HHHH-LK/keel.git; cd keel
+
+# 3. 装依赖 + 配置
+uv sync
+Copy-Item .env.example .env                       # 然后编辑 .env 填 key/model/base_url
+
+# 4. 启动
+keel
+```
+</details>
+
+> 没配 API key 也能进,进去用 `/config key` 现场补。`.env` 里要填的是 `LLM_API_KEY` / `LLM_MODEL_ID` / `LLM_BASE_URL`,模型随便换:OpenAI / Anthropic / Gemini / 本地模型都行。
+
+进去后常用 Slash 命令:`/help`、`/config`、`/memory`、`/clear`。也保留了 `uv run python chat.py` 的旧入口。
 
 ---
 
