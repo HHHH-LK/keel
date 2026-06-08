@@ -122,13 +122,48 @@ def test_build_app_constructs_with_completion_menu():
     assert app is not None
 
 
-# ── 改动 diff 暂存:审批时存、结果时按工具名 FIFO 取(改动类串行 → 对齐)──
-def test_change_diff_stash_take_fifo_by_name():
+# ── 改动审批:diff 在审批前落上方滚动区(可上滑/就是记录)──────────
+def test_commit_change_review_commits_diff_block():
     sess = LiveSession.__new__(LiveSession)
-    sess._change_diffs = []
-    sess._stash_change_diff("Edit", "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n")   # 是 diff → 存
-    sess._stash_change_diff("Bash", "rm -rf /tmp/x")                          # 非 diff → 不存
-    assert len(sess._change_diffs) == 1
-    assert sess._take_change_diff("Read") is None        # 名不符 → 不误取
-    assert sess._take_change_diff("Edit").startswith("---")   # 名符 → 取出
-    assert sess._take_change_diff("Edit") is None        # 取空
+    committed = []
+    sess._commit = lambda t: committed.append(t)
+    ok = sess._commit_change_review(
+        "Edit", {"path": "foo.py"}, "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n")
+    assert ok is True
+    joined = "".join(t.plain for t in committed)
+    assert "Edit(foo.py)" in joined and "x" in joined and "y" in joined
+
+
+def test_commit_change_review_skips_non_diff():
+    sess = LiveSession.__new__(LiveSession)
+    committed = []
+    sess._commit = lambda t: committed.append(t)
+    assert sess._commit_change_review("Bash", {}, "rm -rf /tmp/x") is False
+    assert committed == []                    # 非 diff(Bash)→ 不落改动块
+
+
+# ── 收尾:清单全完成 → 清空(固定面板消失)+ 报"完成";有未完成 → 保留 ──
+def test_finalize_todo_clears_when_all_done():
+    from my_agent_llms.planning.todo import TodoStore
+    s = TodoStore()
+    s.set([{"content": "a", "status": "completed"},
+           {"content": "b", "status": "completed"}])
+    sess = LiveSession.__new__(LiveSession)
+    sess.cli = SimpleNamespace(agent=SimpleNamespace(todo_store=s))
+    committed = []
+    sess._commit = lambda t: committed.append(t)
+    sess._finalize_todo()
+    assert s.items == []                       # 全完成 → 清空,面板消失
+    assert any("完成" in t.plain for t in committed)
+
+
+def test_finalize_todo_keeps_when_unfinished():
+    from my_agent_llms.planning.todo import TodoStore
+    s = TodoStore()
+    s.set([{"content": "a", "status": "completed"},
+           {"content": "b", "status": "in_progress"}])
+    sess = LiveSession.__new__(LiveSession)
+    sess.cli = SimpleNamespace(agent=SimpleNamespace(todo_store=s))
+    sess._commit = lambda t: None
+    sess._finalize_todo()
+    assert len(s.items) == 2                   # 有没干完的 → 保留

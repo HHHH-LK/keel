@@ -50,8 +50,8 @@ from rich.syntax import Syntax
 
 from . import chat_view, theme
 from .markdown_render import render_markdown
-from .permission import PermissionDecision, _looks_like_diff
-from .scrollback_renderer import ScrollbackRenderer
+from .permission import PermissionDecision
+from .scrollback_renderer import ScrollbackRenderer, _is_error_result
 
 _SPIN = ["✻", "✲", "✳", "✴", "✵", "✶", "✷"]
 _APPROVAL_TIMEOUT_S = 300        # 审批 Future 兜底超时(到点 → 安全拒绝,防工作线程永挂)
@@ -64,28 +64,39 @@ _APPROVAL_OPTIONS = [
 ]
 
 
-def _render_approval_box(name: str, preview: str, sel: int, width: int,
-                         diff_cap: int = 16) -> str:
-    """审批浮层:框内【展示截断的完整改动】(审核时可见,批准后随浮层消失,不落日志)
-    + ❯ 选择器。diff 截到 diff_cap 行,保证框不被撑爆、选项常驻可见;
-    +绿 / -红 / 其余暗。返回带 ANSI 的字符串(喂 ptk)。"""
-    body = Text()
-    lines = (preview or "").split("\n") if preview else []
-    shown = lines[:diff_cap]
-    for line in shown:
-        if line.startswith("+") and not line.startswith("+++"):
-            body.append(line + "\n", style=theme.OK)     # 新增 → 绿
-        elif line.startswith("-") and not line.startswith("---"):
-            body.append(line + "\n", style=theme.ERR)    # 删除 → 红
-        else:
-            body.append(line + "\n", style=theme.DIM)
-    hidden = len(lines) - len(shown)
-    if hidden > 0:
-        body.append(f"…(还有 {hidden} 行,批准后写入)\n", style=theme.DIM)
-    if lines:
-        body.append("\n")
+# 会在审批前把【完整改动】落上方滚动区(终端可上滑看全部)的工具(diff 类)
+_DIFF_TOOLS = {"Edit", "Write"}
 
-    body.append("是否执行此操作?\n", style="bold")
+
+def _looks_like_diff(preview: str) -> bool:
+    return bool(preview) and preview.lstrip().startswith("--- ")
+
+
+def _render_change_block(name: str, path: str, preview: str) -> Text:
+    """把完整改动渲成【行号化的紧凑 diff 块】(⏺ 头 + ⎿ +N -M + 改动处),
+    审批前落上方滚动区:既给审核看(可上滑看全部),也就是最终日志记录。"""
+    added, removed, lines = chat_view._parse_diff_for_display(preview)
+    out = Text()
+    out.append("⏺ ", style=theme.AGENT)
+    out.append(f"{name}({path})" if path else name, style=theme.DEFAULT)
+    out.append("\n")
+    out.append_text(chat_view._render_tool_diff(f"+{added} -{removed}", lines))
+    return out
+
+
+def _render_diff_tool_error(name: str, result: str) -> Text:
+    out = Text()
+    out.append("⏺ ", style=theme.ERR)
+    out.append(name, style=theme.ERR)
+    out.append(f"\n  ⎿  {result}", style=theme.ERR)
+    return out
+
+
+def _render_approval_box(name: str, sel: int, width: int) -> str:
+    """审批浮层:只放标题 + ❯ 选择器(完整改动已落上方滚动区,框保持短、选项常驻)。
+    返回带 ANSI 的字符串(喂 ptk)。"""
+    body = Text()
+    body.append("是否执行此操作?(完整改动见上方,可上滑查看)\n", style="bold")
     for i, (_dec, label, hint) in enumerate(_APPROVAL_OPTIONS):
         cur = i == sel
         body.append(" ❯ " if cur else "   ", style="cyan" if cur else "")
@@ -155,9 +166,6 @@ class LiveSession:
         # 用单一不可变快照避免多键 update 被 redraw 读到撕裂组合(I1)。
         self._active: tuple = ("", "text", False)
         self._pending_fut: "Optional[concurrent.futures.Future[bool]]" = None
-        # 审批通过的改动 diff 暂存(FIFO):审批时存、工具结果时取,让日志展示"改动处"。
-        # 改动类工具串行执行 + 结果按计划序上报,故 FIFO 按工具名匹配即对齐。
-        self._change_diffs: list = []
         self.app: Optional[Application] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._real_out = sys.stdout          # 真 stdout(patch_stdout 前捕获,_main 再确认)
@@ -234,10 +242,14 @@ class LiveSession:
         store = self._todo_store()
         return bool(getattr(store, "items", None))
 
-    def _show_todo(self) -> bool:
-        """是否显示固定 todo 面板:有清单【且】当前没在审批
-        (审批时藏起来,免得和审批框挤在一起、连成两个框)。"""
-        return self._has_todos() and not self.state.get("approval")
+    def _finalize_todo(self) -> None:
+        """一轮收尾:清单全完成 → 报一句"完成"并清空,让固定面板消失
+        (任务做完了别一直钉着);有未完成项则保留(用户能看到没干完的)。"""
+        store = self._todo_store()
+        items = getattr(store, "items", None)
+        if items and all(it.get("status") == "completed" for it in items):
+            self._commit(Text("  ⎿  ✓ 任务完成", style=theme.OK))
+            store.items = []
 
     def _todo_fragments(self):
         """非空 → 渲成面板的 ANSI;空 → []。filter 已先挡掉空,这里二次兜底。"""
@@ -264,44 +276,36 @@ class LiveSession:
         return [("class:infobar", "  " + "  ·  ".join(parts))]
 
     # ── 审批:应用内浮层(无嵌套 app)────────────────────────────
-    def _approval_diff_cap(self) -> int:
-        """框内 diff 最多展示几行:按终端高度留出选项+输入框+状态行的空间,避免撑爆。"""
-        rows = shutil.get_terminal_size((80, 24)).lines
-        return max(6, rows - 12)
-
     def _approval_fragments(self):
-        """审批浮层内容:圆角框(含截断 diff)+ ❯ 选择器。空闲返回 []。"""
+        """审批浮层内容:圆角框(只放选项)+ ❯ 选择器。空闲返回 []。"""
         appr = self.state.get("approval")
         if not appr:
             return []
         sel = self.state.get("appr_sel", 0)
-        return ANSI(_render_approval_box(
-            appr["name"], appr.get("preview", ""), sel, _width(),
-            self._approval_diff_cap()))
+        return ANSI(_render_approval_box(appr["name"], sel, _width()))
 
-    def _stash_change_diff(self, name: str, preview: str) -> None:
-        """审批通过 + preview 是 diff(--- 开头)→ 暂存,供工具结果时展示"改动处"。"""
-        if preview and preview.lstrip().startswith("--- "):
-            self._change_diffs.append((name, preview))
-
-    def _take_change_diff(self, name: str):
-        """取出与本次结果同名的最早一笔暂存 diff(FIFO 按名对齐);无则 None。"""
-        if self._change_diffs and self._change_diffs[0][0] == name:
-            return self._change_diffs.pop(0)[1]
-        return None
+    def _commit_change_review(self, name: str, args: Dict, preview: str) -> bool:
+        """diff 类工具:审批【前】就把完整改动落上方滚动区(终端可上滑看全部),
+        它同时就是最终日志记录。返回是否落了(供调用方决定收尾文案)。"""
+        if not _looks_like_diff(preview):
+            return False
+        path = str((args or {}).get("path", "")).strip()
+        self._commit(_render_change_block(name, path, preview))
+        return True
 
     def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
         """工作线程调用:命中授权台账直接放行;否则在事件循环弹浮层,阻塞等 Future。"""
         try:
             if self.cli.grants.is_granted(name, args):
-                self._stash_change_diff(name, preview)   # 自动放行也记录改动,结果时展示
+                self._commit_change_review(name, args, preview)
                 return True
         except Exception:
             pass
         if self._loop is None:
             return False
-        # 完整改动只在审批浮层(临时)里展示,批准后随浮层消失 —— 不落全文 scrollback;
-        # 批准后由工具结果展示【行号化的紧凑 diff(改动处)】(见 _on_tresult)。
+        # 完整改动【审批前】就落上方滚动区:审核时可上滑看全部,且就是日志记录,
+        # 审批框只剩选项(短、不和 todo 挤)。批准后不再重复展示(见 _on_tresult)。
+        reviewed = self._commit_change_review(name, args, preview)
         fut: "concurrent.futures.Future[bool]" = concurrent.futures.Future()
         self._pending_fut = fut                       # 记录,退出时由 _main 解锁(C1)
         appr = {"fut": fut, "name": name, "args": args, "preview": preview}
@@ -320,8 +324,8 @@ class LiveSession:
             allowed = False
         finally:
             self._pending_fut = None
-        if allowed:
-            self._stash_change_diff(name, preview)
+        if reviewed and not allowed:
+            self._commit(Text("  ⎿  (已拒绝,未改动)", style=theme.WARN))
         return allowed
 
     def _resolve_approval(self, decision: "PermissionDecision") -> None:
@@ -387,11 +391,19 @@ class LiveSession:
 
         def _on_tcall(n, a):
             self.state["activity"] = f"调用 {n}"
-            r.tool_call(n, _preview(a), self._is_read_only(n))
+            # diff 类(Edit/Write):改动已在审批时落上方滚动区,不再走 renderer 的
+            # ⏺ 通知/结果(否则一处改动出现两次)。其余工具正常。
+            if n not in _DIFF_TOOLS:
+                r.tool_call(n, _preview(a), self._is_read_only(n))
 
         def _on_tresult(n, res, el):
-            r.tool_result(res, name=n, read_only=self._is_read_only(n),
-                          elapsed_sec=el, diff=self._take_change_diff(n))
+            if n in _DIFF_TOOLS:
+                # 成功:diff 块即记录,不重复;只在【出错】时补一行(绕开 renderer FIFO)
+                if _is_error_result(res):
+                    self._commit(_render_diff_tool_error(n, res))
+            else:
+                r.tool_result(res, name=n, read_only=self._is_read_only(n),
+                              elapsed_sec=el)
             self.state["activity"] = "生成中"
 
         try:
@@ -416,6 +428,7 @@ class LiveSession:
         r.close(tools_used=getattr(self.cli.agent, "last_tool_call_count", 0),
                 elapsed_seconds=time.monotonic() - start,
                 tokens_in=tok["in"], tokens_out=tok["out"])
+        self._finalize_todo()      # 全完成 → 报"完成"并清空,固定面板随之消失
         # 底部信息栏统计:本会话累计 token + 当前 L1 上下文长度(此刻在 worker 线程,
         # agent.run 已结束,顺序读 memory 安全;不在每次重绘时读,避免与生成并发)
         self.state["sess_in"] += tok["in"]
@@ -558,7 +571,7 @@ class LiveSession:
         todo = ConditionalContainer(
             content=Window(FormattedTextControl(self._todo_fragments),
                            dont_extend_height=True),
-            filter=Condition(self._show_todo))
+            filter=Condition(self._has_todos))
         spacer = Window(height=1)        # 状态行与上方对话之间留一行空隙(别太贴)
         info = Window(FormattedTextControl(self._info_bar_fragments), height=1)
         # 审批浮层:仅审批弹起时显示,在输入框上方
@@ -574,8 +587,9 @@ class LiveSession:
         # 钉 height=1:跟 top/bottom 一致,否则两侧 │ 竖条会竖向撑高、把输入框抻成多行。
         middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
                          Window(width=1), fill(width=1, char="│")], height=1)
-        # 审批浮层在最上,todo 面板钉在状态行上方,生成中状态行在框上方,信息栏在框下方。
-        root = HSplit([active, approval, todo, spacer, status,
+        # todo 面板在上(上下文),spacer 隔开,审批浮层紧贴状态行/输入框(动作处),
+        # 信息栏在框下方。todo 与审批之间有空隙,不再连成两个框。
+        root = HSplit([active, todo, spacer, approval, status,
                        HSplit([top, middle, bottom]), info])
         # 包一层 FloatContainer:打 '/' 时命令补全菜单浮在输入框上方(回归旧框体验)。
         root = FloatContainer(
