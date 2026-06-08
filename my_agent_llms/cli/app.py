@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -570,8 +571,26 @@ def cmd_show_config(cli) -> None:
     )
 
 
+def _event_loop_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
 def cmd_setup_wizard(cli) -> None:
     """3 步交互式向导:↑↓ 选 provider → 输 model → 输 api key。"""
+    # live UI 是运行中的事件循环:全屏 ptk 向导内部 asyncio.run 会二次嵌套而崩。
+    # 降级 —— 指引用子命令配置(都在 live 下可用),不崩。
+    if _event_loop_running():
+        help_view.print_warn(
+            console, "全屏配置向导在当前界面不可用,请用子命令配置:")
+        console.print(
+            "  [cyan]/config provider[/] <厂商>  ·  "
+            "[cyan]/config model[/] <模型id>  ·  "
+            "[cyan]/config key[/]  ·  [cyan]/config show[/]")
+        return
     cur = cli.cfg
     cur_key_mask = (
         cur["api_key"][:6] + "…" + cur["api_key"][-4:]
