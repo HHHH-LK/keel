@@ -97,15 +97,28 @@ DEFAULT_CONFIG: Dict = {
 }
 
 
-def load_config() -> Dict:
-    """加载配置;文件不存在或损坏 → 返回默认。永不报错,永不阻塞启动。"""
+def load_config(persist: bool = False) -> Dict:
+    """加载配置;文件不存在或损坏 → 返回默认。永不报错,永不阻塞启动。
+
+    persist=True(仅启动入口用):.env 带来的值【自动落盘】到全局 config.json,
+    这样在 .env 里配一次,以后任何目录跑 keel 都就绪,不必每个项目放 .env。
+    persist=False(默认,给测试/非入口用):只读不写。
+    """
+    data: Dict = {}
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            return _apply_env_fallback(_merge_defaults(data))
         except Exception as exc:
             help_view.print_warn(console, f"配置文件损坏 ({exc}),用默认配置")
-    return _apply_env_fallback(_merge_defaults({}))
+            data = {}
+    cfg = _merge_defaults(data)
+    changed = _apply_env_overrides(cfg)
+    if persist and changed:
+        try:
+            save_config(cfg)
+        except Exception:
+            pass     # 落盘失败不阻塞启动(只读目录/磁盘满等),env 值本轮仍生效
+    return cfg
 
 
 def _merge_defaults(data: Dict) -> Dict:
@@ -114,16 +127,18 @@ def _merge_defaults(data: Dict) -> Dict:
     return out
 
 
-def _apply_env_fallback(cfg: Dict) -> Dict:
-    """config.json 字段为空时,从 .env 兜底 (LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL)。"""
+def _apply_env_overrides(cfg: Dict) -> bool:
+    """.env 里有 LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL 就【覆盖】cfg(env 优先)。
+    返回是否改动了 cfg —— 仅在真有变化时才需落盘(幂等,不每次启动空写)。"""
+    changed = False
     for cfg_key, env_key in (("api_key", "LLM_API_KEY"),
                               ("model",   "LLM_MODEL_ID"),
                               ("base_url","LLM_BASE_URL")):
-        if not cfg.get(cfg_key):
-            env_val = (os.getenv(env_key) or "").strip().strip('"').strip("'")
-            if env_val:
-                cfg[cfg_key] = env_val
-    return cfg
+        env_val = (os.getenv(env_key) or "").strip().strip('"').strip("'")
+        if env_val and cfg.get(cfg_key) != env_val:
+            cfg[cfg_key] = env_val
+            changed = True
+    return changed
 
 
 def save_config(cfg: Dict) -> None:
@@ -1102,7 +1117,7 @@ class ChatCLI:
 
 
 def main() -> None:
-    cfg = load_config()
+    cfg = load_config(persist=True)   # .env 值自动落盘到全局 config,以后任何目录都就绪
     cli = ChatCLI(cfg)
     cli.run()
 
