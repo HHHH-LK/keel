@@ -13,9 +13,10 @@ from my_agent_llms.tools.registry import ToolRegistry
 
 
 class _EchoTool(Tool):
-    def __init__(self, name, side_effect_free):
+    def __init__(self, name, side_effect_free, verify_exempt=False):
         super().__init__(name, "echo")
         self.side_effect_free = side_effect_free
+        self.verify_exempt = verify_exempt
 
     def run(self, parameters):
         return "ok"
@@ -68,3 +69,32 @@ def test_side_effecting_tool_marks_turn_mutated():
                               on_tool_call=None, on_permission_request=None,
                               on_tool_result=None)
     assert agent._turn_mutated is True
+
+
+# ── 记账型工具(记忆/待办):有副作用但不是"值得验证的产物" → 不触发 verify ──
+def test_bookkeeping_tool_does_not_mark_turn_mutated():
+    # remember/write_todo 这类:side_effect_free=False(仍串行执行),
+    # 但 verify_exempt=True → 没写代码就不该凭空触发事后验证。
+    agent = _bare_agent([_EchoTool("remember", side_effect_free=False,
+                                   verify_exempt=True)])
+    agent._turn_mutated = False
+    agent._execute_tool_calls([_tc("remember", "1")], [],
+                              on_tool_call=None, on_permission_request=None,
+                              on_tool_result=None)
+    assert agent._turn_mutated is False
+
+
+# ── 内置工具的标记契约 ──────────────────────────────────────────
+def test_recall_is_side_effect_free():
+    from my_agent_llms.tools.builtin.recall import RecallTool
+    assert getattr(RecallTool, "side_effect_free", False) is True
+
+
+def test_remember_is_verify_exempt():
+    from my_agent_llms.tools.builtin.remember import RememberTool
+    assert getattr(RememberTool, "verify_exempt", False) is True
+
+
+def test_write_todo_is_verify_exempt():
+    from my_agent_llms.planning.todo import WriteTodoTool
+    assert getattr(WriteTodoTool, "verify_exempt", False) is True

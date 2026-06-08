@@ -361,6 +361,11 @@ class MyFunctionCallAgent(Agent):
         tool = self.tool_registry.get_tool(name)
         return bool(getattr(tool, "side_effect_free", False))
 
+    def _tool_is_verify_exempt(self, name: str) -> bool:
+        """verify 闸门豁免:记账型工具(记忆/待办)有副作用但非代码产物,不触发事后 verify。"""
+        tool = self.tool_registry.get_tool(name)
+        return bool(getattr(tool, "verify_exempt", False))
+
     @staticmethod
     def _tool_timeout_message(name: str, timeout: float) -> str:
         return (f"⏱️ 工具 '{name}' 执行超时(>{timeout}s),已放弃等待;"
@@ -457,8 +462,10 @@ class MyFunctionCallAgent(Agent):
         to_exec = [p for p in plans if p["execute"]]
         serial = [p for p in to_exec if not self._tool_is_side_effect_free(p["name"])]
         parallel = [p for p in to_exec if self._tool_is_side_effect_free(p["name"])]
-        if serial:
-            self._turn_mutated = True       # 执行了有副作用工具 → 本轮可进 verify 闸门
+        # verify 闸门:只有"产物型"副作用工具(写文件/改代码/跑命令)才算动过改动;
+        # 记账型(记忆/待办)虽串行执行,但 verify_exempt → 不触发事后验证。
+        if any(not self._tool_is_verify_exempt(p["name"]) for p in serial):
+            self._turn_mutated = True
 
         for p in serial:
             p["result"], p["elapsed"] = self._run_single_tool(p["name"], p["args"], timeout)

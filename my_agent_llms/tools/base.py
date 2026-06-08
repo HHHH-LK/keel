@@ -20,6 +20,10 @@ class Tool(ABC):
     # 白名单标记:仅纯读/纯计算/无任何写集合的工具才置 True,允许同一轮并行执行。
     # 默认保守 False(碰 DB/文件/进程内状态/外部副作用/对人 IO 一律算有副作用)。
     side_effect_free: bool = False
+    # verify 闸门豁免:本工具有副作用,但属于 agent 内部记账(记忆/待办),不是
+    # "值得事后验证的产物"。置 True 后即便串行执行也不置 _turn_mutated,避免对
+    # "没写代码的闲聊"凭空触发 verify。写文件/改代码/跑命令类工具保持 False。
+    verify_exempt: bool = False
 
     def __init__(self, name: str, description: str):
         self.name = name

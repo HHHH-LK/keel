@@ -20,6 +20,8 @@ LLM_REMEMBER_CONFIDENCE = 0.8
 class RememberTool(Tool):
     """把一条关于用户的核心信息写入长期 L0 记忆。"""
 
+    verify_exempt = True  # 写记忆是内部记账,非代码产物 → 不触发事后 verify
+
     def __init__(self, memory: MemoryManager):
         super().__init__(
             name="remember",

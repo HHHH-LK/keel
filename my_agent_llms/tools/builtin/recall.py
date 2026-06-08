@@ -12,6 +12,8 @@ class RecallTool(Tool):
     查询历史」—— 否则 LLM 不会主动调用（OS 类比：进程不知道有虚拟内存就不会触发 page fault）。
     """
 
+    side_effect_free = True  # 纯读记忆,无写 → 可并行,且不触发事后 verify
+
     def __init__(self, memory: MemoryManager, top_k: int = 5):
         super().__init__(
             name="recall",

@@ -51,6 +51,8 @@ class TodoStore:
 class WriteTodoTool(Tool):
     """模型用它记录/更新分步计划。每项编码 'status|content'(规避 array-items 限制)。"""
 
+    verify_exempt = True  # 列计划是内部记账,非代码产物 → 不触发事后 verify
+
     def __init__(self, store: TodoStore):
         super().__init__(
             "write_todo",
