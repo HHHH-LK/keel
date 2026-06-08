@@ -162,7 +162,8 @@ def _result_dot_color(text: str) -> str:
     if not text:
         return theme.DEFAULT
     stripped = text.lstrip()
-    if stripped.startswith("❌") or "拒绝" in stripped:
+    # 只认开头标记;不在正文里全局搜"拒绝",否则 Read 含"拒绝"二字的文件会误判变红。
+    if stripped.startswith("❌") or stripped.startswith("用户拒绝了"):
         return theme.ERR
     return theme.DEFAULT
 

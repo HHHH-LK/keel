@@ -158,3 +158,21 @@ def test_multi_tool_round_fifo_pairs_names_and_readonly():
     assert "Read(a.py)" in joined                     # 第一个名字在
     assert "Bash(ls)" in joined                       # 第二个名字没丢
     assert all(n.strip() != "⏺" for n in notices)     # 没有空 ⏺
+
+
+# ── 错误判定:只认开头标记,不在正文里全局搜 '拒绝'(否则读到含'拒绝'的文件会误判变红)──
+def test_is_error_result_precise():
+    from my_agent_llms.cli.scrollback_renderer import _is_error_result
+    assert _is_error_result("❌ 写入失败") is True
+    assert _is_error_result("用户拒绝了对 Edit 的调用") is True
+    # Read 一个内容里含"拒绝"二字的文件 → 不是错误,不该变红
+    assert _is_error_result("# README\n用户可以拒绝该操作,框会提示。\n...") is False
+    assert _is_error_result("Read 190 lines") is False
+
+
+def test_result_dot_color_not_red_on_content_with_reject_word():
+    from my_agent_llms.cli.chat_view import _result_dot_color
+    from my_agent_llms.cli import theme
+    assert _result_dot_color("内容里提到用户可以拒绝操作") == theme.DEFAULT   # 不变红
+    assert _result_dot_color("❌ 出错了") == theme.ERR
+    assert _result_dot_color("用户拒绝了对 Edit 的调用") == theme.ERR

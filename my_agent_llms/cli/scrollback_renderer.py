@@ -16,6 +16,16 @@ from . import chat_view, theme
 from .markdown_render import render_markdown
 
 
+def _is_error_result(text: str) -> bool:
+    """工具结果是否算错误(→ 红)。只认【开头】标记:❌ 或"用户拒绝了"。
+
+    不在正文里全局搜"拒绝" —— 否则 Read 一个内容含"拒绝"二字的文件(如本项目
+    讲审批的 README/源码)会被误判成错误而整块变红。
+    """
+    s = (text or "").lstrip()
+    return s.startswith("❌") or s.startswith("用户拒绝了")
+
+
 class ScrollbackRenderer:
     def __init__(self,
                  commit: Callable[[Text], None],
@@ -125,8 +135,7 @@ class ScrollbackRenderer:
         rname = name or fifo_name
         ro = fifo_ro if read_only is None else read_only
 
-        stripped = text.lstrip()
-        is_err = stripped.startswith("❌") or "拒绝" in stripped
+        is_err = _is_error_result(text)
         groupable = ro and not is_err and rname != "write_todo"
 
         # 不同名 / 不可组 → 先把已攒的组冲掉,保证顺序
@@ -197,8 +206,7 @@ class ScrollbackRenderer:
         self._group, self._group_name, self._group_ro = [], None, False
         if len(items) == 1:
             preview, text, elapsed = items[0]
-            stripped = text.lstrip()
-            is_err = stripped.startswith("❌") or "拒绝" in stripped
+            is_err = _is_error_result(text)
             self._commit_single(name, preview, ro, is_err, text, elapsed_sec=elapsed)
             return
         color = theme.DEFAULT if ro else theme.OK
