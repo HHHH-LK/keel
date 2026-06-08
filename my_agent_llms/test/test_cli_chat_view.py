@@ -227,3 +227,18 @@ def test_render_user_input_clean_arrow_line():
 def test_render_user_input_empty_skipped():
     out = _capture(chat_view.render_user_input, "   ")
     assert out.strip() == ""
+
+
+def test_diff_changes_use_background_color():
+    """改动处用背景色高亮(+绿底/-红底),不是字体色。"""
+    import io
+    from rich.console import Console
+    from my_agent_llms.cli import chat_view
+    lines = [("1", "+", "新增"), ("2", "-", "删除"), ("3", " ", "上下文")]
+    txt = chat_view._render_tool_diff("已写入 foo.py", lines)
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, color_system="truecolor",
+            width=60).print(txt)
+    out = buf.getvalue()
+    assert "48;2;20;80;42" in out      # 绿底(#14502a)
+    assert "48;2;92;26;34" in out      # 红底(#5c1a22)

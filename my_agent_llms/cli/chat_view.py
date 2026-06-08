@@ -410,13 +410,11 @@ def _render_tool_diff(summary: str, lines: List[Tuple[str, str, str]],
         out.append("\n     ")
         # 行号 (右对齐, DIM)
         out.append(f"{line_num:>{width}} ", style=theme.DIM)
-        # diff 前缀 + 内容,颜色看 kind
+        # diff 前缀 + 内容:改动处用【背景色】高亮(+绿底 / -红底),不是字体色
         if kind == "+":
-            out.append("+", style=theme.OK)
-            out.append(content, style=theme.OK)
+            out.append(f"+{content}", style=theme.DIFF_ADD)
         elif kind == "-":
-            out.append("-", style=theme.ERR)
-            out.append(content, style=theme.ERR)
+            out.append(f"-{content}", style=theme.DIFF_DEL)
         else:
             out.append(" ")
             out.append(content, style=theme.DIM)

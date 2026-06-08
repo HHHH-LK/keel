@@ -26,3 +26,7 @@ DEFAULT  = ""                  # keep terminal default fg
 
 # ── Todo panel ───────────────────────────────────────────
 TODO_ACTIVE = "cyan"          # 当前执行步高亮(不抢 agent 的 magenta)
+
+# ── Diff(改动处用背景色高亮,而非字体色)──────────────────
+DIFF_ADD = "default on #14502a"   # 新增行:绿底
+DIFF_DEL = "default on #5c1a22"   # 删除行:红底
