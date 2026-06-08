@@ -225,6 +225,26 @@ class LiveSession:
             head = "● 就绪"
         return [("class:status", f"  {head}")]
 
+    # ── 固定 todo 面板:钉在状态行上方,随 store 实时更新 ──────────
+    def _todo_store(self):
+        return getattr(getattr(self.cli, "agent", None), "todo_store", None)
+
+    def _has_todos(self) -> bool:
+        store = self._todo_store()
+        return bool(getattr(store, "items", None))
+
+    def _todo_fragments(self):
+        """非空 → 渲成面板的 ANSI;空 → []。filter 已先挡掉空,这里二次兜底。"""
+        store = self._todo_store()
+        items = getattr(store, "items", None)
+        if not items:
+            return []
+        w = _width()
+        panel = chat_view.render_todo_panel(items, width=w)
+        if panel is None:
+            return []
+        return ANSI(_to_ansi(panel, w))
+
     def _info_bar_fragments(self):
         """输入框下方信息栏:当前目录 · 模型 · 上下文 L1/上限 · 本会话 token。"""
         cfg = getattr(self.cli, "cfg", {}) or {}
@@ -475,6 +495,11 @@ class LiveSession:
                            height=D(min=0, max=12)),
             filter=Condition(lambda: bool(self._active[0])))
         status = Window(FormattedTextControl(self._status_fragments), height=1)
+        # 固定 todo 面板:有清单才显示,钉在状态行上方、输入框附近
+        todo = ConditionalContainer(
+            content=Window(FormattedTextControl(self._todo_fragments),
+                           dont_extend_height=True),
+            filter=Condition(self._has_todos))
         spacer = Window(height=1)        # 状态行与上方对话之间留一行空隙(别太贴)
         info = Window(FormattedTextControl(self._info_bar_fragments), height=1)
         # 审批浮层:仅审批弹起时显示,在输入框上方
@@ -490,8 +515,8 @@ class LiveSession:
         # 钉 height=1:跟 top/bottom 一致,否则两侧 │ 竖条会竖向撑高、把输入框抻成多行。
         middle = VSplit([fill(width=1, char="│"), Window(width=1), ta,
                          Window(width=1), fill(width=1, char="│")], height=1)
-        # 审批浮层在最上,生成中状态行在框上方,信息栏在框下方。
-        root = HSplit([active, approval, spacer, status,
+        # 审批浮层在最上,todo 面板钉在状态行上方,生成中状态行在框上方,信息栏在框下方。
+        root = HSplit([active, approval, todo, spacer, status,
                        HSplit([top, middle, bottom]), info])
         style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
                                  "status": "gray", "infobar": "#666666"})

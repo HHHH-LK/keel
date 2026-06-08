@@ -157,11 +157,12 @@ def test_close_flushes_unpaired_notices_as_headers():
     assert "ReadFile(b.py)" in out
 
 
-# ── 守卫:钉底 todo 渲染路径已退役(方案 A 单一上滚路径)──────────────
-def test_pinned_todo_path_is_retired():
+# ── 守卫:旧"整轮 LiveTurnRenderer"钉底路径已退役(方案 A 单一上滚路径)。
+# 注意:固定 todo 面板已用新方式(live_session ConditionalContainer +
+# chat_view.render_todo_panel)重新引入,与这条退役的旧渲染器无关。──────────
+def test_retired_live_turn_renderer_path_stays_dead():
     from my_agent_llms.cli.app import ChatCLI
     assert not hasattr(chat_view, "LiveTurnRenderer"), "LiveTurnRenderer 应已删除"
-    assert not hasattr(chat_view, "render_todo_panel"), "render_todo_panel 应已删除"
     assert not hasattr(ChatCLI, "_chat_once_live"), "_chat_once_live 应已删除"
 
 

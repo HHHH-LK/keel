@@ -23,3 +23,6 @@ ERR      = "red"
 DIM      = "bright_black"      # meta, timestamps, descriptions
 RULE     = "bright_black"      # horizontal separator
 DEFAULT  = ""                  # keep terminal default fg
+
+# ── Todo panel ───────────────────────────────────────────
+TODO_ACTIVE = "cyan"          # 当前执行步高亮(不抢 agent 的 magenta)

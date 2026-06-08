@@ -19,6 +19,18 @@ def test_store_drops_empty_content():
     assert len(s.items) == 1
 
 
+def test_store_enforces_single_in_progress():
+    """模型若一次标多个 in_progress → 只保留【第一个】,其余降回 pending。
+    保证'当前执行步'唯一,高亮才有意义。"""
+    s = TodoStore()
+    s.set([{"content": "a", "status": "completed"},
+           {"content": "b", "status": "in_progress"},
+           {"content": "c", "status": "in_progress"},
+           {"content": "d", "status": "pending"}])
+    assert [it["status"] for it in s.items] == [
+        "completed", "in_progress", "pending", "pending"]
+
+
 def test_write_tool_parses_status_content():
     s = TodoStore()
     tool = WriteTodoTool(s)

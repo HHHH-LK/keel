@@ -14,9 +14,11 @@ import re
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+from rich.box import ROUNDED
 from rich.console import Console
 from rich.live import Live
 from rich.markup import escape as _rich_escape
+from rich.panel import Panel
 from rich.text import Text
 
 from . import theme
@@ -222,6 +224,54 @@ def _render_update_todos(result_text: str) -> Text:
         out.append(f"{mark} {content}", style=style)
         first = False
     return out
+
+
+# 固定 todo 面板的状态标记(区别于上面 scrollback 用的 _TODO_MARK)
+_PANEL_MARK = {"completed": "✓", "in_progress": "◐", "pending": "☐"}
+
+
+def render_todo_panel(items, width: Optional[int] = None):
+    """把 TodoStore.items 渲成钉在输入框上方的固定面板。空 → None(不显示)。
+
+    items: [{content, status}, ...]  status ∈ pending/in_progress/completed。
+    当前步 cyan 高亮(theme.TODO_ACTIVE)、完成绿 ✓ + 删除线、待办灰 ☐;
+    边框中性灰,全部完成转绿。标题带 完成数/总数。
+    """
+    items = [it for it in (items or []) if str(it.get("content", "")).strip()]
+    if not items:
+        return None
+    done = sum(1 for it in items if it.get("status") == "completed")
+    total = len(items)
+
+    body = Text()
+    for i, it in enumerate(items):
+        status = it.get("status", "pending")
+        content = str(it.get("content", "")).strip()
+        mark = _PANEL_MARK.get(status, "☐")
+        if status == "completed":
+            body.append(f"{mark} ", style=theme.OK)
+            body.append(content, style=f"{theme.DIM} strike")
+        elif status == "in_progress":
+            body.append(f"{mark} ", style=f"{theme.TODO_ACTIVE} bold")
+            body.append(content, style=f"{theme.TODO_ACTIVE} bold")
+        else:
+            body.append(f"{mark} ", style=theme.DIM)
+            body.append(content, style=theme.DIM)
+        if i < total - 1:
+            body.append("\n")
+
+    title = Text()
+    title.append(" 任务清单 ", style="bold")
+    title.append("· ", style=theme.DIM)
+    title.append(str(done), style=theme.OK if done else theme.DIM)
+    title.append(f"/{total} ", style=theme.DIM)
+    if done == total:
+        title.append("✓ ", style=theme.OK)
+
+    kw = {} if width is None else {"width": width}
+    return Panel(body, title=title, title_align="left", box=ROUNDED,
+                 border_style=theme.RULE if done < total else theme.OK,
+                 padding=(0, 1), **kw)
 
 
 # unified diff hunk 头:@@ -OLD_START[,OLD_COUNT] +NEW_START[,NEW_COUNT] @@

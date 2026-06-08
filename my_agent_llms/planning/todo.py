@@ -34,10 +34,20 @@ class TodoStore:
 
     def set(self, items):
         norm = []
+        seen_in_progress = False
         for it in items:
             c = str(it.get("content", "")).strip()
-            if c:
-                norm.append({"content": c, "status": it.get("status", "pending")})
+            if not c:
+                continue
+            status = it.get("status", "pending")
+            # 单一"当前步":一次出现多个 in_progress 只认第一个,其余降回 pending,
+            # 保证高亮的"正在执行步"唯一。
+            if status == "in_progress":
+                if seen_in_progress:
+                    status = "pending"
+                else:
+                    seen_in_progress = True
+            norm.append({"content": c, "status": status})
         self.items = norm
 
     def render(self) -> str:
