@@ -155,6 +155,9 @@ class LiveSession:
         # 用单一不可变快照避免多键 update 被 redraw 读到撕裂组合(I1)。
         self._active: tuple = ("", "text", False)
         self._pending_fut: "Optional[concurrent.futures.Future[bool]]" = None
+        # 审批通过的改动 diff 暂存(FIFO):审批时存、工具结果时取,让日志展示"改动处"。
+        # 改动类工具串行执行 + 结果按计划序上报,故 FIFO 按工具名匹配即对齐。
+        self._change_diffs: list = []
         self.app: Optional[Application] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._real_out = sys.stdout          # 真 stdout(patch_stdout 前捕获,_main 再确认)
@@ -271,17 +274,29 @@ class LiveSession:
             appr["name"], appr.get("preview", ""), sel, _width(),
             self._approval_diff_cap()))
 
+    def _stash_change_diff(self, name: str, preview: str) -> None:
+        """审批通过 + preview 是 diff(--- 开头)→ 暂存,供工具结果时展示"改动处"。"""
+        if preview and preview.lstrip().startswith("--- "):
+            self._change_diffs.append((name, preview))
+
+    def _take_change_diff(self, name: str):
+        """取出与本次结果同名的最早一笔暂存 diff(FIFO 按名对齐);无则 None。"""
+        if self._change_diffs and self._change_diffs[0][0] == name:
+            return self._change_diffs.pop(0)[1]
+        return None
+
     def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
         """工作线程调用:命中授权台账直接放行;否则在事件循环弹浮层,阻塞等 Future。"""
         try:
             if self.cli.grants.is_granted(name, args):
+                self._stash_change_diff(name, preview)   # 自动放行也记录改动,结果时展示
                 return True
         except Exception:
             pass
         if self._loop is None:
             return False
-        # 完整改动只在审批浮层(临时)里展示,批准后随浮层消失 —— 不落 scrollback,
-        # 避免把整段写入内容永久留在日志里(批准后日志只剩"✅ 已写入 xxx"一行)。
+        # 完整改动只在审批浮层(临时)里展示,批准后随浮层消失 —— 不落全文 scrollback;
+        # 批准后由工具结果展示【行号化的紧凑 diff(改动处)】(见 _on_tresult)。
         fut: "concurrent.futures.Future[bool]" = concurrent.futures.Future()
         self._pending_fut = fut                       # 记录,退出时由 _main 解锁(C1)
         appr = {"fut": fut, "name": name, "args": args, "preview": preview}
@@ -293,12 +308,16 @@ class LiveSession:
                 self.app.invalidate()
 
         self._loop.call_soon_threadsafe(_show)
+        allowed = False
         try:
-            return fut.result(timeout=_APPROVAL_TIMEOUT_S)
+            allowed = fut.result(timeout=_APPROVAL_TIMEOUT_S)
         except Exception:
-            return False
+            allowed = False
         finally:
             self._pending_fut = None
+        if allowed:
+            self._stash_change_diff(name, preview)
+        return allowed
 
     def _resolve_approval(self, decision: "PermissionDecision") -> None:
         """主循环按键回调:落定审批,唤醒工作线程。"""
@@ -367,7 +386,7 @@ class LiveSession:
 
         def _on_tresult(n, res, el):
             r.tool_result(res, name=n, read_only=self._is_read_only(n),
-                          elapsed_sec=el)
+                          elapsed_sec=el, diff=self._take_change_diff(n))
             self.state["activity"] = "生成中"
 
         try:

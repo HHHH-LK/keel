@@ -120,3 +120,15 @@ def test_build_app_constructs_with_completion_menu():
                   "l1_tokens": 0, "sess_in": 0, "sess_out": 0}
     app = sess._build_app(None)            # queue 只在 enter 闭包里用,构建期不碰
     assert app is not None
+
+
+# ── 改动 diff 暂存:审批时存、结果时按工具名 FIFO 取(改动类串行 → 对齐)──
+def test_change_diff_stash_take_fifo_by_name():
+    sess = LiveSession.__new__(LiveSession)
+    sess._change_diffs = []
+    sess._stash_change_diff("Edit", "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\n")   # 是 diff → 存
+    sess._stash_change_diff("Bash", "rm -rf /tmp/x")                          # 非 diff → 不存
+    assert len(sess._change_diffs) == 1
+    assert sess._take_change_diff("Read") is None        # 名不符 → 不误取
+    assert sess._take_change_diff("Edit").startswith("---")   # 名符 → 取出
+    assert sess._take_change_diff("Edit") is None        # 取空

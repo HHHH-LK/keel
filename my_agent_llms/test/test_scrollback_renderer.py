@@ -176,3 +176,24 @@ def test_result_dot_color_not_red_on_content_with_reject_word():
     assert _result_dot_color("内容里提到用户可以拒绝操作") == theme.DEFAULT   # 不变红
     assert _result_dot_color("❌ 出错了") == theme.ERR
     assert _result_dot_color("用户拒绝了对 Edit 的调用") == theme.ERR
+
+
+# ── 改动类工具结果:展示【行号化的紧凑 diff(只改动处)】,而非全文/仅"已写入" ──
+def test_tool_result_renders_compact_diff_when_given():
+    r, commits, _ = _make()
+    diff = ("--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
+            " 不变行\n-旧行\n+新行\n")
+    r.tool_result("✅ 已写入 foo.py", name="Edit", read_only=False, diff=diff)
+    out = "".join(c.plain for c in commits)
+    assert "旧行" in out and "新行" in out      # 展示了修改的地方
+    assert "已写入" in out                      # 成功摘要还在
+
+
+def test_tool_result_caps_huge_diff():
+    r, commits, _ = _make()
+    body = "".join(f"+line{i}\n" for i in range(100))
+    diff = f"--- a/f\n+++ b/f\n@@ -0,0 +1,100 @@\n{body}"
+    r.tool_result("✅ 已写入 f", name="Write", read_only=False, diff=diff, diff_cap=20)
+    out = "".join(c.plain for c in commits)
+    assert "line0" in out and "line99" not in out   # 超出 cap 不展示
+    assert "more lines" in out                       # 截断提示

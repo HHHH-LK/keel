@@ -119,7 +119,7 @@ class ScrollbackRenderer:
         self._pending.append((name, args_preview, read_only))
 
     def tool_result(self, text: str, *, name: str = None, read_only=None,
-                    elapsed_sec=None,
+                    elapsed_sec=None, diff: str = None, diff_cap: int = 30,
                     max_lines: int = 4, max_line_chars: int = 300) -> None:
         """工具结果(Claude Code 风编排,不全量倒出)。
 
@@ -152,11 +152,12 @@ class ScrollbackRenderer:
             return
 
         self._commit_single(rname, preview, ro, is_err, text,
-                            elapsed_sec=elapsed_sec, max_lines=max_lines,
-                            max_line_chars=max_line_chars)
+                            elapsed_sec=elapsed_sec, diff=diff, diff_cap=diff_cap,
+                            max_lines=max_lines, max_line_chars=max_line_chars)
 
     def _commit_single(self, name: str, preview: str, read_only: bool,
                        is_err: bool, text: str, *, elapsed_sec=None,
+                       diff: str = None, diff_cap: int = 30,
                        max_lines: int = 4, max_line_chars: int = 300) -> None:
         """单个工具结果落地(原 tool_result 主体)。"""
         self._dot = False        # 工具块后,下一段正文重新起一个 ⏺ 步(带块间空行)
@@ -170,6 +171,18 @@ class ScrollbackRenderer:
             return
 
         self._commit_step(chat_view._tool_notice_lines(name, preview, color))
+
+        # 改动类(Edit/Write):审批通过后只展示【行号化的紧凑 diff(改动处)】,
+        # 不倒全文。diff 由 live 层在审批时存下、结果时透传。
+        if diff and not is_err:
+            _added, _removed, dlines = chat_view._parse_diff_for_display(diff)
+            if dlines:
+                trunc = max(0, len(dlines) - diff_cap)
+                summary = text.strip() or "已修改"
+                if elapsed_sec is not None:
+                    summary = f"{summary}  ·  {chat_view._fmt_elapsed(elapsed_sec)}"
+                self._commit(chat_view._render_tool_diff(summary, dlines[:diff_cap], trunc))
+                return
 
         # per-type 一行摘要(命中才用)
         summarizer = chat_view._TOOL_RESULT_SUMMARY.get(name)
