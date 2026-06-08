@@ -120,12 +120,3 @@ def test_build_app_constructs_with_completion_menu():
                   "l1_tokens": 0, "sess_in": 0, "sess_out": 0}
     app = sess._build_app(None)            # queue 只在 enter 闭包里用,构建期不碰
     assert app is not None
-
-
-# ── 审批 diff 预览:新增绿/删除红(修 ansigreen/ansired 被 Rich 忽略 → 无色)──
-def test_preview_block_colors_added_removed():
-    from my_agent_llms.cli.live_session import _render_preview_block, _to_ansi
-    out = _to_ansi(_render_preview_block(
-        "Edit(foo.py)", "+新增行\n-删除行\n 上下文"), 60)
-    assert "\x1b[32m" in out      # 新增 → 绿(theme.OK)
-    assert "\x1b[31m" in out      # 删除 → 红(theme.ERR)

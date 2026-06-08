@@ -64,41 +64,38 @@ _APPROVAL_OPTIONS = [
 ]
 
 
-def _render_preview_block(name: str, preview: str) -> Text:
-    """待审批的【完整改动】渲成一块,提交进 scrollback —— 可用终端原生上滑查看全部,
-    不截断(审批框只放选项,内容在这里看)。+绿 / -红 / 其余暗。"""
-    out = Text()
-    out.append("⏺ ", style=theme.AGENT)
-    out.append(f"{name}  ·  待确认", style=theme.DIM)
-    for line in (preview or "").split("\n"):
-        out.append("\n  ")
+def _render_approval_box(name: str, preview: str, sel: int, width: int,
+                         diff_cap: int = 16) -> str:
+    """审批浮层:框内【展示截断的完整改动】(审核时可见,批准后随浮层消失,不落日志)
+    + ❯ 选择器。diff 截到 diff_cap 行,保证框不被撑爆、选项常驻可见;
+    +绿 / -红 / 其余暗。返回带 ANSI 的字符串(喂 ptk)。"""
+    body = Text()
+    lines = (preview or "").split("\n") if preview else []
+    shown = lines[:diff_cap]
+    for line in shown:
         if line.startswith("+") and not line.startswith("+++"):
-            out.append(line, style=theme.OK)        # 新增 → 绿(Rich 不识别 ansigreen → 无色,故用 theme)
+            body.append(line + "\n", style=theme.OK)     # 新增 → 绿
         elif line.startswith("-") and not line.startswith("---"):
-            out.append(line, style=theme.ERR)       # 删除 → 红
+            body.append(line + "\n", style=theme.ERR)    # 删除 → 红
         else:
-            out.append(line, style=theme.DIM)
-    return out
+            body.append(line + "\n", style=theme.DIM)
+    hidden = len(lines) - len(shown)
+    if hidden > 0:
+        body.append(f"…(还有 {hidden} 行,批准后写入)\n", style=theme.DIM)
+    if lines:
+        body.append("\n")
 
-
-def _render_approval_box(name: str, sel: int, width: int) -> str:
-    """紧凑审批框:标题=工具名 + ❯ 选择器三选项。**不放 diff**——完整改动已落
-    scrollback(可上滑查看),框只管选,保证选项永远可见、框不会被撑大。
-
-    配色:灰边框 + cyan 一个强调色(选中项)。返回带 ANSI 的字符串(喂 ptk)。"""
-    opts = Text()
-    opts.append("完整改动见上方(可上滑查看)\n", style=theme.DIM)
-    opts.append("是否执行此操作?\n", style="bold")
+    body.append("是否执行此操作?\n", style="bold")
     for i, (_dec, label, hint) in enumerate(_APPROVAL_OPTIONS):
         cur = i == sel
-        opts.append(" ❯ " if cur else "   ", style="cyan" if cur else "")
-        opts.append(f"{i + 1}. {label}", style="bold cyan" if cur else "")
-        opts.append(f"   [{hint}]\n", style=theme.DIM)
+        body.append(" ❯ " if cur else "   ", style="cyan" if cur else "")
+        body.append(f"{i + 1}. {label}", style="bold cyan" if cur else "")
+        body.append(f"   [{hint}]\n", style=theme.DIM)
 
     buf = io.StringIO()
     con = RichConsole(file=buf, force_terminal=True, color_system="truecolor",
                       width=width)
-    con.print(Panel(opts, title=f"  {name}", title_align="left",
+    con.print(Panel(body, title=f"  {name}", title_align="left",
                     border_style="grey50"))
     return buf.getvalue().rstrip("\n")
 
@@ -259,13 +256,20 @@ class LiveSession:
         return [("class:infobar", "  " + "  ·  ".join(parts))]
 
     # ── 审批:应用内浮层(无嵌套 app)────────────────────────────
+    def _approval_diff_cap(self) -> int:
+        """框内 diff 最多展示几行:按终端高度留出选项+输入框+状态行的空间,避免撑爆。"""
+        rows = shutil.get_terminal_size((80, 24)).lines
+        return max(6, rows - 12)
+
     def _approval_fragments(self):
-        """审批浮层内容:圆角框 + ❯ 选择器。空闲返回 []。"""
+        """审批浮层内容:圆角框(含截断 diff)+ ❯ 选择器。空闲返回 []。"""
         appr = self.state.get("approval")
         if not appr:
             return []
         sel = self.state.get("appr_sel", 0)
-        return ANSI(_render_approval_box(appr["name"], sel, _width()))
+        return ANSI(_render_approval_box(
+            appr["name"], appr.get("preview", ""), sel, _width(),
+            self._approval_diff_cap()))
 
     def _on_permission(self, name: str, args: Dict, preview: str) -> bool:
         """工作线程调用:命中授权台账直接放行;否则在事件循环弹浮层,阻塞等 Future。"""
@@ -276,9 +280,8 @@ class LiveSession:
             pass
         if self._loop is None:
             return False
-        # 完整改动先落 scrollback(可上滑查看全部);审批框只放选项,不再塞 diff。
-        if preview:
-            self._commit(_render_preview_block(name, preview))
+        # 完整改动只在审批浮层(临时)里展示,批准后随浮层消失 —— 不落 scrollback,
+        # 避免把整段写入内容永久留在日志里(批准后日志只剩"✅ 已写入 xxx"一行)。
         fut: "concurrent.futures.Future[bool]" = concurrent.futures.Future()
         self._pending_fut = fut                       # 记录,退出时由 _main 解锁(C1)
         appr = {"fut": fut, "name": name, "args": args, "preview": preview}
