@@ -73,9 +73,9 @@ def _render_preview_block(name: str, preview: str) -> Text:
     for line in (preview or "").split("\n"):
         out.append("\n  ")
         if line.startswith("+") and not line.startswith("+++"):
-            out.append(line, style="ansigreen")
+            out.append(line, style=theme.OK)        # 新增 → 绿(Rich 不识别 ansigreen → 无色,故用 theme)
         elif line.startswith("-") and not line.startswith("---"):
-            out.append(line, style="ansired")
+            out.append(line, style=theme.ERR)       # 删除 → 红
         else:
             out.append(line, style=theme.DIM)
     return out
