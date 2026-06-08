@@ -326,8 +326,20 @@ class LiveSession:
         except Exception:
             return False
 
+    def _notify_not_ready(self) -> None:
+        """未配置(agent=None)时的友好提示,替代崩 'NoneType'.run。"""
+        self._commit(chat_view._continuation_lines(
+            "还没配置模型 —— 用 /config key 设置 API Key 后再聊。", theme.WARN))
+
     # ── 一轮:在后台线程跑 agent.run ──────────────────────────
     def _run_turn(self, user_input: str) -> None:
+        # 兜底:agent 没构建成(没配置 key)→ 给提示,别让 agent.run 在 None 上崩。
+        if getattr(self.cli, "agent", None) is None:
+            self._notify_not_ready()
+            self.state["busy"] = False
+            if self.app is not None:
+                self.app.invalidate()
+            return
         r = ScrollbackRenderer(self._commit, self._set_active, _width)
         start = time.monotonic()
         tok = {"in": 0, "out": 0}
@@ -435,6 +447,11 @@ class LiveSession:
                 # run_in_terminal 返回的 future 故意 fire-and-forget(同步命令即可)。
                 cmd = text
                 run_in_terminal(lambda: self.cli.handle_command(cmd))
+                return
+            # 未配置 key(agent=None):别排队(否则 worker 在 None 上崩),直接提示
+            if getattr(self.cli, "agent", None) is None:
+                self._notify_not_ready()
+                event.app.invalidate()
                 return
             queue.put_nowait(text)               # 普通输入 → 排队给 agent
             event.app.invalidate()

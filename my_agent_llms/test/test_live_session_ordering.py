@@ -87,3 +87,20 @@ def test_set_active_defers_state_mutation_to_loop():
     # 活跃区状态不在调用线程直接改,而是排进 loop(由 loop 线程一并 set+invalidate)
     assert sess._active == ("", "text", False)     # 尚未应用
     assert len(sess._loop.scheduled) == 1
+
+
+# ── not ready(agent=None)时输入不崩,给友好提示 ──────────────────
+from types import SimpleNamespace
+
+
+def test_run_turn_without_agent_shows_notice_not_crash():
+    sess = LiveSession.__new__(LiveSession)
+    sess.cli = SimpleNamespace(agent=None)
+    sess.state = {"busy": True}
+    sess.app = None
+    committed = []
+    sess._commit = lambda text_obj: committed.append(text_obj)
+    sess._run_turn("帮我看看这个项目")          # agent 是 None,不能抛 AttributeError
+    assert sess.state["busy"] is False          # 收尾置回空闲
+    joined = "".join(getattr(t, "plain", str(t)) for t in committed)
+    assert "config" in joined.lower() or "配置" in joined   # 提示去配置
