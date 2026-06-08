@@ -77,3 +77,13 @@ def test_has_todos_flag():
     assert _session_with(s)._has_todos() is False
     s.set([{"content": "x", "status": "pending"}])
     assert _session_with(s)._has_todos() is True
+
+
+def test_todo_hidden_during_approval():
+    from my_agent_llms.planning.todo import TodoStore
+    s = TodoStore(); s.set([{"content": "x", "status": "pending"}])
+    sess = _session_with(s)
+    sess.state = {}
+    assert sess._show_todo() is True              # 平时显示
+    sess.state = {"approval": {"name": "Edit"}}
+    assert sess._show_todo() is False             # 审批时藏起来,不和审批框挤一起

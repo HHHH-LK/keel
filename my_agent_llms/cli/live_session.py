@@ -234,6 +234,11 @@ class LiveSession:
         store = self._todo_store()
         return bool(getattr(store, "items", None))
 
+    def _show_todo(self) -> bool:
+        """是否显示固定 todo 面板:有清单【且】当前没在审批
+        (审批时藏起来,免得和审批框挤在一起、连成两个框)。"""
+        return self._has_todos() and not self.state.get("approval")
+
     def _todo_fragments(self):
         """非空 → 渲成面板的 ANSI;空 → []。filter 已先挡掉空,这里二次兜底。"""
         store = self._todo_store()
@@ -553,7 +558,7 @@ class LiveSession:
         todo = ConditionalContainer(
             content=Window(FormattedTextControl(self._todo_fragments),
                            dont_extend_height=True),
-            filter=Condition(self._has_todos))
+            filter=Condition(self._show_todo))
         spacer = Window(height=1)        # 状态行与上方对话之间留一行空隙(别太贴)
         info = Window(FormattedTextControl(self._info_bar_fragments), height=1)
         # 审批浮层:仅审批弹起时显示,在输入框上方
