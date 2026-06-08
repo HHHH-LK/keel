@@ -47,3 +47,10 @@ docs/
 
 # ---- Git worktrees (local feature branches) ----
 .worktrees/
+
+# ---- Local scratch: demos / PTY probes (root-level, not part of the package) ----
+/_demo_*
+/_pty_probe*
+/_todo_live_demo.py
+/probe.py
+/test_probe_del.py
