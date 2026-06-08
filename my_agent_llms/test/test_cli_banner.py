@@ -23,7 +23,7 @@ def test_banner_ready_shows_model_and_tools_and_workspace():
         tool_count=4,
         workspace=Path("/tmp/ws"),
     )
-    assert "my·companion" in out
+    assert "keel" in out
     assert "minimax" in out
     assert "MiniMax-Text-01" in out
     assert "ready" in out

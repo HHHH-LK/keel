@@ -1,5 +1,5 @@
 [project]
-name = "my-agent-llms"
+name = "keel"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-myai = "my_agent_llms.cli.app:main"
+keel = "my_agent_llms.cli.app:main"
 
 [build-system]
 requires = ["hatchling"]

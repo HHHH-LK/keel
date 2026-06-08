@@ -1,6 +1,6 @@
 """Inline scrolling banner — no outer frame.
 
-Logo:   █▒  my·companion        (LOGO_L + LOGO_R + TITLE)
+Logo:   █▒  keel        (LOGO_L + LOGO_R + TITLE)
 Tag:    A long-term AI partner with memory
 Bullets: status / model / workspace
 Footer:  /help · / for menu
@@ -38,7 +38,7 @@ def render(
     # Logo + title
     console.print(
         f"  [{theme.LOGO_L}]█[/][{theme.LOGO_R}]▒[/]  "
-        f"[{theme.TITLE}]my·companion[/]"
+        f"[{theme.TITLE}]keel[/]"
     )
     console.print()
     console.print(f"  [{theme.DIM}]A long-term AI partner with memory[/]")
