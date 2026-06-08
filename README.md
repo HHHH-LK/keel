@@ -81,12 +81,6 @@ agent 最大的谎言是"我做完了"。Keel 不吃这一套:
 
 ## 实际跑一段给你看
 
-<p align="center">
-  <img src="assets/screenshot.png" alt="Keel CLI in action — theme, status bar, Markdown rendering, pinned todo" width="720">
-  <br>
-  <em>Keel CLI: theme-aware, with status bar, Markdown rendering, and a pinned todo panel.</em>
-</p>
-
 下面是一段**真实对话**(逐字未改,仅去掉重复日志行)。注意她怎么**主动把记忆当工具来管理**——存的时候自己调 `remember`,用的时候自己调 `recall`,而不是把历史一股脑塞回 context:
 
 ```
