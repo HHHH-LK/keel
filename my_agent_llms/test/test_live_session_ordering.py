@@ -104,3 +104,19 @@ def test_run_turn_without_agent_shows_notice_not_crash():
     assert sess.state["busy"] is False          # 收尾置回空闲
     joined = "".join(getattr(t, "plain", str(t)) for t in committed)
     assert "config" in joined.lower() or "配置" in joined   # 提示去配置
+
+
+# ── "/" 命令菜单:completer 接进 live 输入框(回归:旧框有/live 漏了)──
+def test_input_area_wires_slash_completer():
+    from my_agent_llms.cli.completer import SlashCompleter
+    sess = LiveSession.__new__(LiveSession)
+    ta = sess._make_input_area()
+    assert isinstance(ta.completer, SlashCompleter)
+
+
+def test_build_app_constructs_with_completion_menu():
+    sess = LiveSession.__new__(LiveSession)
+    sess.state = {"busy": False, "spin": 0, "activity": "", "cwd": "~",
+                  "l1_tokens": 0, "sess_in": 0, "sess_out": 0}
+    app = sess._build_app(None)            # queue 只在 enter 闭包里用,构建期不碰
+    assert app is not None

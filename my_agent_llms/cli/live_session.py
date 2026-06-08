@@ -33,10 +33,11 @@ from prompt_toolkit.formatted_text import ANSI, HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (
-    ConditionalContainer, HSplit, VSplit, Window,
+    ConditionalContainer, Float, FloatContainer, HSplit, VSplit, Window,
 )
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
+from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
@@ -424,16 +425,30 @@ class LiveSession:
         except asyncio.CancelledError:
             pass
 
+    def _make_input_area(self):
+        """单行输入框,挂 SlashCompleter(打 '/' 弹命令菜单,与旧框一致)。
+        不折行(否则中文双宽字符很快撑到行尾,框被折成两行),改横向滚动。"""
+        from .completer import SlashCompleter
+        return TextArea(multiline=False, wrap_lines=False,
+                        completer=SlashCompleter(), complete_while_typing=True,
+                        prompt=HTML("<arrow>❯ </arrow>"))
+
     # ── app 构建 ─────────────────────────────────────────────
     def _build_app(self, queue: "asyncio.Queue[str]"):
-        # 单行输入:不折行(否则中文双宽字符很快撑到行尾,框被折成两行),
-        # 改为横向滚动,框稳定保持一行高。
-        ta = TextArea(multiline=False, wrap_lines=False,
-                      prompt=HTML("<arrow>❯ </arrow>"))
+        ta = self._make_input_area()
         kb = KeyBindings()
 
         @kb.add("enter")
         def _(event):
+            # 补全菜单开着时:Enter 接受当前候选 / 关菜单,不提交(与旧框一致)
+            buf = ta.buffer
+            if buf.complete_state:
+                cc = buf.complete_state.current_completion
+                if cc is not None:
+                    buf.apply_completion(cc)
+                else:
+                    buf.cancel_completion()
+                return
             text = ta.text.strip()
             ta.text = ""
             if not text:
@@ -535,6 +550,11 @@ class LiveSession:
         # 审批浮层在最上,todo 面板钉在状态行上方,生成中状态行在框上方,信息栏在框下方。
         root = HSplit([active, approval, todo, spacer, status,
                        HSplit([top, middle, bottom]), info])
+        # 包一层 FloatContainer:打 '/' 时命令补全菜单浮在输入框上方(回归旧框体验)。
+        root = FloatContainer(
+            content=root,
+            floats=[Float(xcursor=True, ycursor=True,
+                          content=CompletionsMenu(max_height=8, scroll_offset=1))])
         style = Style.from_dict({"arrow": "magenta", "frame.border": "gray",
                                  "status": "gray", "infobar": "#666666"})
         return Application(layout=Layout(root, focused_element=ta),
