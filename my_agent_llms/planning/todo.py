@@ -5,22 +5,56 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from my_agent_llms.tools.base import Tool, ToolParameter
 
 _MARK = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+_VALID_STATUS = {"pending", "in_progress", "completed"}
 TODO_HEADING = "## 当前任务清单(进度)"
 
 
+def _norm_status(status) -> str:
+    s = str(status or "").strip()
+    return s if s in _VALID_STATUS else "pending"
+
+
+def _item_from_dict(d) -> Optional[dict]:
+    c = str(d.get("content", "")).strip()
+    return {"content": c, "status": _norm_status(d.get("status"))} if c else None
+
+
 def parse_todo_lines(raw):
-    """把 ['status|内容', ...] 解析成 [{content, status}](空内容丢弃)。
+    """解析成 [{content, status}](空内容丢弃)。容忍模型常用的多种格式:
+      - 'status|内容' 字符串(原设计)
+      - {'status':.., 'content':..} 字典对象(模型常直接传结构化对象)
+      - 上述字典的 JSON 字符串
     单源真相:WriteTodoTool 落库与 agent 结构闸门共用,避免两处解析跑偏。"""
     items = []
     for line in raw or []:
-        s, sep, c = str(line).partition("|")
+        # 1) 直接是字典对象
+        if isinstance(line, dict):
+            it = _item_from_dict(line)
+            if it:
+                items.append(it)
+            continue
+        text = str(line).strip()
+        # 2) 看着像 JSON 字典 → 试解析(模型偶尔把对象当字符串塞进来)
+        if text.startswith("{"):
+            try:
+                d = json.loads(text)
+                if isinstance(d, dict):
+                    it = _item_from_dict(d)
+                    if it:
+                        items.append(it)
+                    continue
+            except Exception:
+                pass
+        # 3) 'status|内容' / 纯内容
+        s, sep, c = text.partition("|")
         if sep and c.strip():
-            items.append({"content": c.strip(), "status": s.strip() or "pending"})
+            items.append({"content": c.strip(), "status": _norm_status(s)})
         elif s.strip():
             items.append({"content": s.strip(), "status": "pending"})
     return items

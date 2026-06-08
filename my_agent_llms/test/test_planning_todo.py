@@ -201,3 +201,37 @@ def test_gate_allows_in_progress_alongside_work():
     ])
     assert s.items[0]["status"] == "completed"
     assert s.items[1]["status"] == "in_progress"
+
+
+# ── 容错:模型常把 todos 传成 dict / JSON 字符串而非 'status|内容' ──
+def test_parse_accepts_dict_items():
+    from my_agent_llms.planning.todo import parse_todo_lines
+    out = parse_todo_lines([
+        {"status": "in_progress", "content": "替换中英混杂"},
+        {"status": "pending", "content": "加配置表"},
+    ])
+    assert out == [
+        {"content": "替换中英混杂", "status": "in_progress"},
+        {"content": "加配置表", "status": "pending"},
+    ]
+
+
+def test_parse_dict_bad_status_falls_to_pending():
+    from my_agent_llms.planning.todo import parse_todo_lines
+    out = parse_todo_lines([{"status": "doing", "content": "x"}])
+    assert out == [{"content": "x", "status": "pending"}]
+
+
+def test_parse_accepts_json_string_items():
+    from my_agent_llms.planning.todo import parse_todo_lines
+    out = parse_todo_lines(['{"status": "completed", "content": "跑测试"}'])
+    assert out == [{"content": "跑测试", "status": "completed"}]
+
+
+def test_parse_still_handles_pipe_strings():
+    from my_agent_llms.planning.todo import parse_todo_lines
+    out = parse_todo_lines(["in_progress|读配置", "改端口"])
+    assert out == [
+        {"content": "读配置", "status": "in_progress"},
+        {"content": "改端口", "status": "pending"},
+    ]
