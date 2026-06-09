@@ -1040,6 +1040,11 @@ class ChatCLI:
                 verify_announced["v"] = True
             _restart_status()
 
+        def _on_verify_start() -> None:
+            # 候选答案被压制(不显示),闸门核对中 → 把 spinner 文案换成"校验中…"。
+            spinner.set_label("校验中…")
+            _restart_status()
+
         # 运行期间后台监听 esc:按下即 set cancel,run 在步级/流式逐 chunk 处中断。
         from my_agent_llms.cli.key_listener import EscListener
         cancelled = False
@@ -1055,6 +1060,7 @@ class ChatCLI:
                     on_llm_done=_on_llm_done,
                     on_reasoning_chunk=_on_reasoning,
                     on_verify_phase=_on_verify_phase,
+                    on_verify_start=_on_verify_start,
                     should_cancel=lambda: _esc.cancelled,
                 )
         except Exception as exc:

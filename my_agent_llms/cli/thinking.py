@@ -59,6 +59,7 @@ class ThinkingSpinner:
                  interval: float = 0.1):
         self.console = console
         self.interval = interval
+        self._role = role
         self._active = False
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -66,6 +67,13 @@ class ThinkingSpinner:
         # animation loop only does cheap raw writes and never touches Rich.
         self._frames = [
             _render_ansi(self._frame_text(ch, role, label), console)
+            for ch in _FRAMES
+        ]
+
+    def set_label(self, label: str) -> None:
+        """换状态文案(如'校验中…')。帧数不变 → 运行中的动画线程会无缝切到新文案。"""
+        self._frames = [
+            _render_ansi(self._frame_text(ch, self._role, label), self.console)
             for ch in _FRAMES
         ]
 

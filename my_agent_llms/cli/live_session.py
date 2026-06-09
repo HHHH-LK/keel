@@ -441,6 +441,12 @@ class LiveSession:
                 r.verify_notice()
                 verify_announced["v"] = True
 
+        def _on_verify_start():
+            # 候选答案此刻被压制(不显示),闸门正在核对 → 状态行提示"校验中"。
+            self.state["activity"] = "校验中"
+            if self.app is not None:
+                self.app.invalidate()
+
         try:
             self.cli.agent.run(
                 user_input,
@@ -451,6 +457,7 @@ class LiveSession:
                 on_permission_request=self._on_permission,
                 on_llm_done=on_llm_done,
                 on_verify_phase=_on_verify_phase,
+                on_verify_start=_on_verify_start,
                 should_cancel=lambda: self.state["cancel"],
             )
         except Exception as exc:

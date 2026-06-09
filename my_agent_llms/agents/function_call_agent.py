@@ -107,6 +107,7 @@ class MyFunctionCallAgent(Agent):
             on_llm_done: Optional[LLMDoneCallback] = None,
             on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
             on_verify_phase: Optional[VerifyPhaseCallback] = None,
+            on_verify_start: Optional[Callable[[], None]] = None,
             should_cancel: Optional[Callable[[], bool]] = None,
             **kwargs) -> str:
         """运行一轮。on_text_chunk/on_tool_call 不传 → 同步阻塞行为，传 → 流式回调。
@@ -140,6 +141,29 @@ class MyFunctionCallAgent(Agent):
         # (_verify_history 会被清),否则不可行动的 command_ok 又会把循环拖回空转。
         _verify_passed_history: list = []
         _verify_best = None
+        # ── C: 验证未通过前不把候选答案显示给用户 ──
+        # enable_verify 且本轮有改动时,候选最终答案先缓冲、不流式;闸门判通过/止损后再
+        # 一次性 emit。被拒候选(重答/replan 那几轮)直接丢弃,用户永远看不到。
+        # 带 tool_calls 的那次响应里的文本是【叙述/预说明】(不是候选答案)→ 照常 flush 给用户。
+        _text_buf: list = []
+        _suppress = [False]            # 可变盒:闭包里改
+        _answer_shown_live = [False]   # 最终答案是否已流式给过用户 → 末尾不再重复 emit
+
+        def _gated_text(t):
+            if _suppress[0]:
+                _text_buf.append(t)
+            elif on_text_chunk is not None:
+                on_text_chunk(t)
+
+        def _flush_buf_live():
+            """把缓冲文本真正吐给用户(用于带 tool_calls 的叙述/预说明)。"""
+            if _text_buf and on_text_chunk is not None:
+                try:
+                    on_text_chunk("".join(_text_buf))
+                except Exception:
+                    logger.exception("on_text_chunk 回调异常,忽略")
+            _text_buf.clear()
+
         # 默认 0:__new__ 建的测试 agent 无此属性 → 不 replan,保持旧行为
         _replan_budget = getattr(self, "replan_budget", 0)
         # 注意(Phase 1 已知限制):验证重试轮与工具轮共享 self.max_steps 预算。
@@ -150,10 +174,13 @@ class MyFunctionCallAgent(Agent):
                 break
             self._refresh_todo_injection(messages)
             self._maybe_nudge_todo(messages)      # 改够多次还没列清单 → 提醒用 write_todo
+            # 本轮是否压制候选文本 = 验证将会跑(开关开 且 已动过改动)。压制 ⟺ 会验证。
+            _text_buf.clear()
+            _suppress[0] = self._should_run_verify(self._turn_mutated)
             t_llm = time.monotonic()
             response = self._invoke_with_tools(
                 messages, tools, tool_choice,
-                on_text_chunk=on_text_chunk,
+                on_text_chunk=_gated_text,
                 on_reasoning_chunk=on_reasoning_chunk,
                 should_cancel=_cancel,
                 **kwargs,
@@ -178,8 +205,11 @@ class MyFunctionCallAgent(Agent):
                 # 零开销返回首答。只读任务不该被凭空生成 spec、逼模型凑关键词/重答。
                 if not self._should_run_verify(self._turn_mutated):
                     final_response = candidate
+                    _answer_shown_live[0] = True   # 未压制 → 已流式给用户,末尾不再 emit
                     break
                 # ── 验证-重试 gate(硬插入,不靠模型自觉)──
+                # 候选已被 _gated_text 缓冲(未显示)。先告知 UI"校验中",再跑闸门。
+                self._emit_verify_start(on_verify_start)
                 if _verify_spec is None:
                     _verify_spec = self.spec_generator.generate(
                         input_text, tools=self.tool_registry.list_tools())
@@ -208,6 +238,8 @@ class MyFunctionCallAgent(Agent):
                 messages.append({"role": "user", "content": gate["feedback"]})
                 continue
 
+            # 带 tool_calls → 缓冲的是叙述/预说明,不是候选答案 → flush 给用户。
+            _flush_buf_live()
             messages.append({
                 "role": "assistant",
                 "content": message.content or "",
@@ -255,6 +287,7 @@ class MyFunctionCallAgent(Agent):
                 except Exception:
                     logger.exception("on_llm_done 回调异常,忽略")
             final_response = self._extract_message_content(response.choices[0].message)
+            _answer_shown_live[0] = True   # 兜底调用走真 on_text_chunk 直接流式了
 
         if not final_response:
             final_response = (
@@ -267,10 +300,17 @@ class MyFunctionCallAgent(Agent):
                 # 占位文本也得让用户看到（前面流式可能一字未出）
                 try:
                     on_text_chunk(final_response)
+                    _answer_shown_live[0] = True
                 except Exception:
                     logger.exception("on_text_chunk 回调异常,忽略")
 
         final_response = self._run_response_hooks(input_text, final_response, messages)
+        # C: 候选被压制(未流式)且最终答案还没显示过 → 此刻一次性 emit 已验证的最终答案。
+        if final_response and not _answer_shown_live[0] and on_text_chunk is not None:
+            try:
+                on_text_chunk(final_response)
+            except Exception:
+                logger.exception("on_text_chunk 回调异常,忽略")
         # TDD 子运行(_in_tdd)期间不在这里写 memory:由顶层 _run_tdd 统一补记一次,
         # 避免把实现阶段的子提示词("请写实现…")当成用户输入污染记忆。
         if not getattr(self, "_in_tdd", False):
@@ -278,6 +318,16 @@ class MyFunctionCallAgent(Agent):
         self.last_tool_call_count = tool_call_count
         logger.debug(f"{self.name} 响应完成")
         return final_response
+
+    @staticmethod
+    def _emit_verify_start(cb) -> None:
+        """安全触发 on_verify_start:每轮进闸门前调用,UI 借此显示'校验中'。"""
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            logger.exception("on_verify_start 回调异常,忽略")
 
     @staticmethod
     def _emit_verify_phase(cb, round_idx: int) -> None:
