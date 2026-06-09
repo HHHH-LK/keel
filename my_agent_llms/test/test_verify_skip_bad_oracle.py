@@ -78,3 +78,10 @@ def test_spec_prompt_warns_string_checks_cannot_see_files():
     from my_agent_llms.verify.spec import _SPEC_PROMPT
     assert "文本回答" in _SPEC_PROMPT                  # string_* 语义被澄清
     assert "command_ok 或 field_equals" in _SPEC_PROMPT  # 文件内容的正确选型被点名
+
+
+def test_spec_prompt_discourages_fabricated_command_ok_for_docs():
+    """纯文档/文案任务不该凭空编 command_ok(失败反馈不可行动 → 空转)。"""
+    from my_agent_llms.verify.spec import _SPEC_PROMPT
+    assert "不可行动" in _SPEC_PROMPT                  # 点名 command_ok 反馈的缺陷
+    assert "真实可执行测试" in _SPEC_PROMPT            # 只在有真测试时才用 command_ok

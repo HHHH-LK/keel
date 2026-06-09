@@ -47,6 +47,11 @@ python3 -c "import json;d=json.load(open('f.json'));assert all(x['k'].startswith
 ⚠️ string_*/judge 只能看到 agent 的【文本回答】,看不到文件系统;**任何对文件内容/存在性的检查,
 必须用 command_ok 或 field_equals**(它们能读文件),绝不要用 string_contains 去验文件内容。
 
+⚠️ command_ok 的失败反馈【不可行动】(只说"没通过",不告诉模型哪条命令、为什么)。所以
+**只在有真实可执行测试时才用 command_ok**(如跑 pytest、编译、校验 JSON 可解析)。纯文档/
+文案/README/注释类任务【没有真测试】,不要凭空编 command_ok(那会让模型对着看不见的命令空转);
+此类任务的"文件是否存在/某字段是否对"请用 field_equals,其余约束用 judge 或 string_*(验文本回答)。
+
 可用工具: {tools}
 
 只输出一个 JSON 对象,形如:

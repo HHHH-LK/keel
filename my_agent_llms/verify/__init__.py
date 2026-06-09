@@ -6,6 +6,7 @@ from my_agent_llms.verify.convergence import (
     Verdict, ConvergenceJudge, Round, fingerprint,
 )
 from my_agent_llms.verify.loop import VerifyResult, VerifyRetryLoop, Executor
+from my_agent_llms.verify.stall import stalled_oracle_ids, apply_demotion
 
 __all__ = [
     "Check", "CheckSpec", "SpecGenerator",
@@ -13,4 +14,5 @@ __all__ = [
     "residual",
     "Verdict", "ConvergenceJudge", "Round", "fingerprint",
     "VerifyResult", "VerifyRetryLoop", "Executor",
+    "stalled_oracle_ids", "apply_demotion",
 ]

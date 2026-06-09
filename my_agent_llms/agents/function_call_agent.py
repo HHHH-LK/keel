@@ -136,6 +136,9 @@ class MyFunctionCallAgent(Agent):
         _verify_spec = None
         _verify_round = 0
         _verify_history: list = []
+        # 原始每轮 passed 历史:用于停滞 oracle 降级判定。**故意不随 replan 清空**
+        # (_verify_history 会被清),否则不可行动的 command_ok 又会把循环拖回空转。
+        _verify_passed_history: list = []
         _verify_best = None
         # 默认 0:__new__ 建的测试 agent 无此属性 → 不 replan,保持旧行为
         _replan_budget = getattr(self, "replan_budget", 0)
@@ -182,7 +185,11 @@ class MyFunctionCallAgent(Agent):
                         input_text, tools=self.tool_registry.list_tools())
                 gate = self._verify_gate(
                     candidate, messages, _verify_spec,
-                    _verify_round, _verify_history, _verify_best)
+                    _verify_round, _verify_history, _verify_best,
+                    _verify_passed_history)
+                if gate["demoted"]:
+                    logger.info("verify: 停滞 command_ok 已降级为 SKIP(不可行动,杜绝空转): %s",
+                                sorted(gate["demoted"]))
                 _verify_best = gate["best"]
                 _verify_round += 1
                 # STUCK/OSCILLATING(原地打转)且还有预算 → 换思路重新规划,而非放弃
@@ -282,17 +289,31 @@ class MyFunctionCallAgent(Agent):
         except Exception:
             logger.exception("on_verify_phase 回调异常,忽略")
 
-    def _verify_gate(self, candidate, messages, spec, round_idx, history, best):
-        """对候选答案跑一轮验证,更新 best/history,返回是否止损 + 反馈文案。"""
+    def _verify_gate(self, candidate, messages, spec, round_idx, history, best,
+                     passed_history=None):
+        """对候选答案跑一轮验证,更新 best/history,返回是否止损 + 反馈文案。
+
+        passed_history: run() 持有的【原始】每轮 passed 累积列表(不随 replan 清空)。
+            据此把连续 N 轮判 False 的不可行动 command_ok 降级为 SKIP,杜绝空转。
+        """
         from my_agent_llms.verify import CheckContext, residual, fingerprint, Verdict
         from my_agent_llms.verify.residual import effective_count
         from my_agent_llms.verify.loop import feedback_from
         from my_agent_llms.verify.convergence import Round
+        from my_agent_llms.verify.stall import stalled_oracle_ids, apply_demotion
 
         ctx = CheckContext(
             result=candidate, trajectory=messages,
             workspace=getattr(self, "workspace", None))
-        passed = self.checker_runner.run(spec, ctx)
+        raw_passed = self.checker_runner.run(spec, ctx)
+        # 停滞 oracle 降级:先把本轮原始结果入历史,再据末 N 轮挑出该降级的 command_ok。
+        if passed_history is not None:
+            passed_history.append(dict(raw_passed))
+            demoted = stalled_oracle_ids(spec, passed_history)
+        else:
+            demoted = set()
+        passed = apply_demotion(raw_passed, demoted)   # 降级后的视图,供残差/收敛/反馈用
+
         res = residual(spec, passed)
         if best is None or res < best.residual:   # 严格小于 → 平局保留更早那轮
             best = SimpleNamespace(residual=res, result=candidate, passed=passed)
@@ -304,6 +325,7 @@ class MyFunctionCallAgent(Agent):
         stop = verdict != Verdict.CONTINUE
         needs_replan = verdict in (Verdict.STUCK, Verdict.OSCILLATING)
         return {"best": best, "stop": stop, "needs_replan": needs_replan,
+                "demoted": demoted,
                 "feedback": feedback_from(spec, passed) or "请继续完善答案。"}
 
     def _make_plan(self, task: str, stuck_feedback: str) -> str:
